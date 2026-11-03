@@ -269,7 +269,7 @@ func (i *ImageManager) fetchAndCacheCoverFromServer(ctx context.Context, coverID
 		}
 		img, err := server.GetCoverArt(coverID, coverArtThumbnailSize)
 		<-i.serverFetchSema // release
-		if err == nil {
+		if err == nil && imageIsCacheable(img) {
 			if i.ensureCoverCacheDir() != "" {
 				_ = i.writeJpeg(img, i.filePathForCover(coverID))
 			}
@@ -301,7 +301,7 @@ func (i *ImageManager) getFullSizeCoverArtFromServer(ctx context.Context, coverI
 		}
 		im, err := server.GetCoverArt(coverID, 0)
 		<-i.serverFetchSema // release
-		if err == nil {
+		if err == nil && imageIsCacheable(im) {
 			i.cachedFullSizeCover = im
 			i.cachedFullSizeCoverID = coverID
 			i.cachedFullSizeCoverAccessedAt = time.Now().UnixMilli()
@@ -415,4 +415,12 @@ func sanitizeFileName(s string) string {
 		return fmt.Sprintf("%x", sha256.Sum256([]byte(s)))
 	}
 	return name
+}
+
+// Honor provider cache policy for temporary images in both memory and on disk.
+func imageIsCacheable(img image.Image) bool {
+	if policy, ok := img.(interface{ Cacheable() bool }); ok {
+		return policy.Cacheable()
+	}
+	return img != nil
 }
