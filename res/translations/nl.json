@@ -356,5 +356,9 @@
     "wrong username/password": "verkeerde gebruikersnaam of wachtwoord",
     "x_minutes_ago": {
         "other": "59 minutes ago"
+    },
+    "{{.albumsCount}} albums": {
+        "one": "{{.albumsCount}} album",
+        "other": "{{.albumsCount}} albums"
     }
 }

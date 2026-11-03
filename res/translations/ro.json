@@ -353,5 +353,10 @@
     "wrong username/password": "nume utilizator sau parolă greșite",
     "x_minutes_ago": {
         "other": "59 minutes ago"
+    },
+    "{{.albumsCount}} albums": {
+        "one": "{{.albumsCount}} album",
+        "few": "{{.albumsCount}} albume",
+        "other": "{{.albumsCount}} de albume"
     }
 }

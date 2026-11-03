@@ -329,7 +329,7 @@ func DisplayReleaseType(releaseTypes mediaprovider.ReleaseTypes) string {
 	case releaseTypes&mediaprovider.ReleaseTypeSoundtrack > 0:
 		baseType = lang.L("Soundtrack")
 	case releaseTypes&mediaprovider.ReleaseTypeOther > 0:
-		baseType = lang.L("Other")
+		baseType = lang.LocalizeKey("releaseTypeOther", "Other")
 	}
 
 	var modifiers []string

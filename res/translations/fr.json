@@ -375,6 +375,7 @@
         "other": "il y a {{.years}} ans"
     },
     "{{.albumsCount}} albums": {
+        "many": "{{.albumsCount}} albums",
         "one": "{{.albumsCount}} album",
         "other": "{{.albumsCount}} albums"
     },

@@ -355,5 +355,10 @@
     "wrong username/password": "nome de usuário/senha incorreto(a)",
     "x_minutes_ago": {
         "other": "59 minutes ago"
+    },
+    "{{.albumsCount}} albums": {
+        "many": "{{.albumsCount}} álbuns",
+        "one": "{{.albumsCount}} álbum",
+        "other": "{{.albumsCount}} álbuns"
     }
 }

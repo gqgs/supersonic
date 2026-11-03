@@ -371,5 +371,10 @@
     "x_years_ago": {
         "one": "hace un año",
         "other": "hace {{.years}} años"
+    },
+    "{{.albumsCount}} albums": {
+        "many": "{{.albumsCount}} álbumes",
+        "one": "{{.albumsCount}} álbum",
+        "other": "{{.albumsCount}} álbumes"
     }
 }

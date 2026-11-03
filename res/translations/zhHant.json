@@ -340,5 +340,9 @@
     "wrong username/password": "錯誤的用戶名/密碼",
     "x_minutes_ago": {
         "other": "59 minutes ago"
+    },
+    "{{.albumsCount}} albums": {
+        "one": "{{.albumsCount}} 專輯",
+        "other": "{{.albumsCount}} 專輯"
     }
 }
