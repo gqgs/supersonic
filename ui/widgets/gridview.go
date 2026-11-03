@@ -235,6 +235,9 @@ func (g *GridView) Clear() {
 	g.stateMutex.Lock()
 	defer g.stateMutex.Unlock()
 	g.cancelFetch()
+	for _, card := range g.itemForIndex {
+		card.ImgLoader.Cancel()
+	}
 	g.items = nil
 	g.done = true
 }
@@ -242,6 +245,9 @@ func (g *GridView) Clear() {
 func (g *GridView) Reset(iter GridViewIterator) {
 	g.stateMutex.Lock()
 	g.cancelFetch()
+	for _, card := range g.itemForIndex {
+		card.ImgLoader.Cancel()
+	}
 	g.items = nil
 	g.itemForIndex = make(map[int]*GridViewItem)
 	g.done = false
@@ -256,6 +262,9 @@ func (g *GridView) Reset(iter GridViewIterator) {
 func (g *GridView) ResetFromState(state *GridViewState) {
 	g.stateMutex.Lock()
 	g.cancelFetch()
+	for _, card := range g.itemForIndex {
+		card.ImgLoader.Cancel()
+	}
 	g.GridViewState = *state
 	g.itemForIndex = make(map[int]*GridViewItem)
 	g.stateMutex.Unlock()
@@ -266,6 +275,9 @@ func (g *GridView) ResetFromState(state *GridViewState) {
 func (g *GridView) ResetFixed(items []GridViewItemModel) {
 	g.stateMutex.Lock()
 	g.cancelFetch()
+	for _, card := range g.itemForIndex {
+		card.ImgLoader.Cancel()
+	}
 	g.items = items
 	g.itemForIndex = make(map[int]*GridViewItem)
 	g.done = true
@@ -590,5 +602,13 @@ func (g *GridView) ReloadImages() {
 	g.stateMutex.RUnlock()
 	for _, card := range cards {
 		card.ImgLoader.Load(card.coverArtID)
+	}
+}
+
+func (g *GridView) CancelImages() {
+	g.stateMutex.RLock()
+	defer g.stateMutex.RUnlock()
+	for _, card := range g.itemForIndex {
+		card.ImgLoader.Cancel()
 	}
 }

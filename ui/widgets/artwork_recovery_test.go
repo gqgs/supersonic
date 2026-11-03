@@ -3,6 +3,7 @@ package widgets
 import (
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"testing"
@@ -112,4 +113,97 @@ func TestGroupedArtworkRecoveryAndRendering(t *testing.T) {
 	if !card.Cover.Im.HaveImage() {
 		t.Fatal("cache-clear refresh did not recover")
 	}
+}
+
+func TestGroupedArtworkColdScrollIsViewportBounded(t *testing.T) {
+	app := test.NewApp()
+	defer app.Quit()
+	queue := make(chan func(), 1000)
+	fyne.SetCurrentApp(&searchTestApp{App: app, driver: &searchTestDriver{Driver: app.Driver(), queue: queue}})
+	fetch := &recoveryFetcher{}
+	model := GroupedReleasesModel{}
+	for n := 0; n < 120; n++ {
+		id := fmt.Sprintf("album-%03d", n)
+		model.Albums = append(model.Albums, GridViewItemModel{ID: id, Name: id, CoverArtID: id})
+	}
+	group := NewGroupedReleases(model, fetch)
+	win := app.NewWindow("cold scroll")
+	defer win.Close()
+	win.SetContent(group)
+	win.Resize(fyne.NewSize(650, 500))
+	group.Refresh()
+	cold := len(fetch.ids)
+	if cold == 0 || cold > 20 {
+		t.Fatalf("cold viewport requested %d of 120 images", cold)
+	}
+	for n := 0; n < 5; n++ {
+		group.Refresh()
+	}
+	if len(fetch.ids) != cold {
+		t.Fatal("paint refresh duplicated outstanding requests")
+	}
+	group.ScrollToOffset(2500)
+	scrolled := len(fetch.ids) - cold
+	if scrolled == 0 || scrolled > 20 {
+		t.Fatalf("scroll requested %d images", scrolled)
+	}
+	cancelled := 0
+	for _, v := range fetch.cancelled[:cold] {
+		if v {
+			cancelled++
+		}
+	}
+	if cancelled != cold {
+		t.Fatalf("only %d of %d offscreen requests cancelled", cancelled, cold)
+	}
+	artwork := image.NewRGBA(image.Rect(0, 0, 400, 400))
+	for y := 0; y < 400; y++ {
+		for x := 0; x < 400; x++ {
+			artwork.Set(x, y, color.RGBA{0x33, 0x66, 0x99, 255})
+		}
+	}
+	for n := cold; n < len(fetch.callbacks); n++ {
+		fetch.callbacks[n](artwork, nil)
+	}
+	for len(queue) > 0 {
+		(<-queue)()
+	}
+	rendered := win.Canvas().Capture()
+	found := false
+	for y := 0; y < rendered.Bounds().Dy(); y++ {
+		for x := 0; x < rendered.Bounds().Dx(); x++ {
+			r, g, b, _ := rendered.At(x, y).RGBA()
+			if r>>8 == 0x33 && g>>8 == 0x66 && b>>8 == 0x99 {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("scrolled artwork did not render")
+	}
+	beforeWheel := len(fetch.ids)
+	group.container.Scrolled(&fyne.ScrollEvent{Scrolled: fyne.Delta{DY: 2500}})
+	if len(fetch.ids) <= beforeWheel {
+		t.Fatal("wheel scrolling did not load new viewport")
+	}
+	group.sections[0].titleRow.Tapped(nil)
+	if len(group.visibleArtwork) != 0 {
+		t.Fatal("collapsed section retained image work")
+	}
+	group.sections[0].titleRow.Tapped(nil)
+	if len(group.visibleArtwork) == 0 {
+		t.Fatal("expanded section did not reload visible artwork")
+	}
+	group.CancelImages()
+	afterCancel := len(fetch.ids)
+	test.WidgetRenderer(group).Refresh()
+	if len(fetch.ids) != afterCancel {
+		t.Fatal("renderer restarted artwork after page disposal")
+	}
+	for _, v := range fetch.cancelled {
+		if !v {
+			t.Fatal("leaving page retained image work")
+		}
+	}
+	t.Logf("120 releases: cold viewport=%d requests, next viewport=%d, offscreen cancellations=%d", cold, scrolled, cancelled)
 }

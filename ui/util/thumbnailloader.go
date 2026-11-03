@@ -19,6 +19,7 @@ type ThumbnailLoader struct {
 	im              ImageFetcher
 	request         uint64
 	cacheGeneration uint64
+	invalidated     bool
 
 	OnBeforeLoad func()
 	OnLoaded     func(image.Image)
@@ -37,7 +38,7 @@ func NewThumbnailLoader(im ImageFetcher, onLoaded func(image.Image)) ThumbnailLo
 
 // NeedsReload reports explicit cache invalidation, not ordinary paint refreshes.
 func (i *ThumbnailLoader) NeedsReload() bool {
-	return i.cacheGeneration != i.generation()
+	return i.invalidated || i.cacheGeneration != i.generation()
 }
 
 func (i *ThumbnailLoader) generation() uint64 {
@@ -47,14 +48,21 @@ func (i *ThumbnailLoader) generation() uint64 {
 	return 0
 }
 
-func (i *ThumbnailLoader) Load(coverID string) {
+// Cancel stops outstanding work and invalidates callbacks already queued on the UI thread.
+func (i *ThumbnailLoader) Cancel() {
+	i.invalidated = true
 	i.request++
-	request := i.request
-	i.cacheGeneration = i.generation()
 	if i.prevLoadCancel != nil {
 		i.prevLoadCancel()
 		i.prevLoadCancel = nil
 	}
+}
+
+func (i *ThumbnailLoader) Load(coverID string) {
+	i.Cancel()
+	i.invalidated = false
+	request := i.request
+	i.cacheGeneration = i.generation()
 	if coverID == "" {
 		i.callOnLoaded(nil)
 		return

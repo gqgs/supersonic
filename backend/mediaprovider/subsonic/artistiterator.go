@@ -75,7 +75,7 @@ func (s *subsonicMediaProvider) IterateArtists(sortOrder string, filter mediapro
 }
 
 func (s *subsonicMediaProvider) SearchArtists(searchQuery string, filter mediaprovider.ArtistFilter) mediaprovider.ArtistIterator {
-	return s.newSearchArtistIter(searchQuery, filter, s.prefetchCoverCB)
+	return s.newSearchArtistIter(searchQuery, filter, nil)
 }
 
 type searchArtistIter struct {
@@ -158,7 +158,7 @@ func (s *searchArtistIter) addNewArtists(artists []*subsonic.ArtistID3) {
 }
 
 func (s *subsonicMediaProvider) baseArtistIterFromSimpleSortOrder(sortFn func([]*subsonic.ArtistID3) []*subsonic.ArtistID3, filter mediaprovider.ArtistFilter) mediaprovider.ArtistIterator {
-	return helpers.NewArtistIterator(s.artistFetchFnFromStandardSort(sortFn), filter, s.prefetchCoverCB)
+	return helpers.NewArtistIterator(s.artistFetchFnFromStandardSort(sortFn), filter, nil)
 }
 
 func (s *subsonicMediaProvider) artistFetchFnFromStandardSort(sortFn func([]*subsonic.ArtistID3) []*subsonic.ArtistID3) helpers.ArtistFetchFn {

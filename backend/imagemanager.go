@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -41,6 +42,8 @@ type ImageManager struct {
 	baseCacheDir    string
 	thumbnailCache  ImageCache
 	cacheGeneration atomic.Uint64
+	coverFlightsMu  sync.Mutex
+	coverFlights    map[coverFlightKey]*coverFlight
 
 	cachedFullSizeCover           image.Image
 	cachedFullSizeCoverID         string
@@ -50,6 +53,7 @@ type ImageManager struct {
 	filesWrittenSinceLastPrune bool
 
 	serverFetchSema chan any
+	artistFetchSema chan any
 }
 
 // NewImageManager returns a new ImageManager.
@@ -68,6 +72,7 @@ func NewImageManager(ctx context.Context, s *ServerManager, baseCacheDir string)
 		},
 		maxOnDiskCacheSizeBytes: defaultDiskCacheSizeBytes,
 		serverFetchSema:         make(chan any, maxConcurrentServerFetches),
+		artistFetchSema:         make(chan any, 2),
 	}
 	s.OnLogout(i.ClearInMemoryCache)
 	i.thumbnailCache.OnEvictTaskRan = func() {
@@ -201,6 +206,12 @@ func (i *ImageManager) ImageCacheGeneration() uint64 { return i.cacheGeneration.
 // ClearInMemoryCache clears images from the in-memory caches.
 func (i *ImageManager) ClearInMemoryCache() {
 	i.cacheGeneration.Add(1)
+	i.coverFlightsMu.Lock()
+	defer i.coverFlightsMu.Unlock()
+	for _, flight := range i.coverFlights {
+		flight.cancel()
+	}
+	i.coverFlights = nil
 	i.thumbnailCache.Clear()
 	i.clearFullSizeCover()
 }
@@ -258,32 +269,52 @@ func (i *ImageManager) fetchAndCacheCoverFromDiskOrServer(ctx context.Context, c
 }
 
 func (i *ImageManager) fetchAndCacheCoverFromServer(ctx context.Context, coverID string, ttl time.Duration, cb func(image.Image, error)) (image.Image, error) {
+	img, err := i.sharedCover(ctx, coverID, func(shared context.Context) (image.Image, error) { return i.fetchCoverFromServer(shared, coverID, ttl) })
+	if ctx.Err() == nil && cb != nil {
+		cb(img, err)
+	}
+	return img, err
+}
+
+func (i *ImageManager) fetchCoverFromServer(ctx context.Context, coverID string, ttl time.Duration) (image.Image, error) {
+	generation := i.ImageCacheGeneration()
 	if i.s.Server == nil {
 		err := errors.New("logged out")
-		if ctx.Err() == nil && cb != nil {
-			cb(nil, err)
-		}
 		return nil, err
+	}
+	// Artist resolution must not occupy every slot needed by album covers.
+	if classifier, ok := i.s.Server.(interface{ IsArtistCoverArt(string) bool }); ok && classifier.IsArtistCoverArt(coverID) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case i.artistFetchSema <- struct{}{}:
+		}
+		defer func() { <-i.artistFetchSema }()
 	}
 	select {
 	case <-ctx.Done():
 		return nil, context.Canceled
 	case i.serverFetchSema <- struct{}{}: // acquire
+		defer func() { <-i.serverFetchSema }()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if img, ok := i.GetCoverThumbnailFromCache(coverID); ok {
+			return img, nil
+		}
 		server := i.s.Server
 		if server == nil {
 			return nil, errors.New("logged out")
 		}
-		img, err := server.GetCoverArt(coverID, coverArtThumbnailSize)
-		<-i.serverFetchSema // release
-		if err == nil && imageIsCacheable(img) {
+		img, err := fetchCoverWithContext(ctx, server, coverID, coverArtThumbnailSize)
+		i.coverFlightsMu.Lock()
+		if err == nil && ctx.Err() == nil && generation == i.ImageCacheGeneration() && imageIsCacheable(img) {
 			if i.ensureCoverCacheDir() != "" {
 				_ = i.writeJpeg(img, i.filePathForCover(coverID))
 			}
 			i.thumbnailCache.SetWithTTL(coverID, img, ttl)
 		}
-		if ctx.Err() == nil && cb != nil {
-			cb(img, err)
-		}
+		i.coverFlightsMu.Unlock()
 		return img, err
 	}
 }
@@ -301,12 +332,15 @@ func (i *ImageManager) getFullSizeCoverArtFromServer(ctx context.Context, coverI
 	case <-ctx.Done():
 		return nil, context.Canceled
 	case i.serverFetchSema <- struct{}{}: // acquire
+		defer func() { <-i.serverFetchSema }()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		server := i.s.Server
 		if server == nil {
 			return nil, errors.New("logged out")
 		}
-		im, err := server.GetCoverArt(coverID, 0)
-		<-i.serverFetchSema // release
+		im, err := fetchCoverWithContext(ctx, server, coverID, 0)
 		if err == nil && imageIsCacheable(im) {
 			i.cachedFullSizeCover = im
 			i.cachedFullSizeCoverID = coverID

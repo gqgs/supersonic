@@ -198,6 +198,7 @@ func (a *ArtistPage) Save() SavedPage {
 		s.gridScrollPos = a.groupedReleases.GetScrollOffset()
 		s.sectionVis = a.groupedReleases.GetSectionVisibility()
 		s.sectionVisNeedApply = true
+		a.groupedReleases.CancelImages()
 		a.groupedReleases.Model = widgets.GroupedReleasesModel{}
 		a.pool.Release(util.WidgetTypeGroupedReleases, a.groupedReleases)
 	}
@@ -381,6 +382,7 @@ func (a *ArtistPage) showAlbumGrid(reSort bool) {
 		a.pool.Release(util.WidgetTypeGridView, a.albumGrid)
 		a.albumGrid = nil
 	} else if !useGroupedReleases && a.albumGrid == nil && a.groupedReleases != nil {
+		a.groupedReleases.CancelImages()
 		a.groupedReleases.Model = widgets.GroupedReleasesModel{}
 		a.pool.Release(util.WidgetTypeGroupedReleases, a.groupedReleases)
 		a.groupedReleases = nil
@@ -567,6 +569,14 @@ func (a *ArtistPage) obtainNewTracklist() *widgets.Tracklist {
 }
 
 func (a *ArtistPage) onViewChange(num int) {
+	if num != 0 {
+		if a.groupedReleases != nil {
+			a.groupedReleases.CancelImages()
+		}
+		if a.albumGrid != nil {
+			a.albumGrid.CancelImages()
+		}
+	}
 	// save current data
 	if a.tracklistCtr != nil {
 		tl := a.tracklistCtr.Objects[0].(*widgets.Tracklist)

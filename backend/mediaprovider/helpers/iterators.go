@@ -30,8 +30,12 @@ func NewAlbumIterator(fetchFn AlbumFetchFn, filter mediaprovider.AlbumFilter, cb
 type ArtistFetchFn func(offset, limit int) ([]*mediaprovider.Artist, error)
 
 func NewArtistIterator(fetchFn ArtistFetchFn, filter mediaprovider.ArtistFilter, cb func(string)) mediaprovider.ArtistIterator {
+	var prefetch func(*mediaprovider.Artist)
+	if cb != nil {
+		prefetch = func(a *mediaprovider.Artist) { cb(a.CoverArtID) }
+	}
 	return &baseIter[mediaprovider.Artist, mediaprovider.ArtistFilterOptions]{
-		prefetchCB: func(a *mediaprovider.Artist) { cb(a.CoverArtID) },
+		prefetchCB: prefetch,
 		fetcher:    fetchFn,
 		filter:     filter,
 	}
