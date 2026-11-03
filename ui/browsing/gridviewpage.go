@@ -175,6 +175,7 @@ func (g *GridViewPage[M, F]) createContainer() {
 }
 
 func (g *GridViewPage[M, F]) Reload() {
+	g.grid.ReloadImages()
 	if g.searchText != "" {
 		g.doSearch(g.searchText)
 	} else {

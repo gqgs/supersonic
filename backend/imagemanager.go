@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -36,9 +37,10 @@ const (
 // It maintains an in-memory cache of recently used images for immediate future access,
 // and a larger on-disc cache of images that is periodically re-requested from the server.
 type ImageManager struct {
-	s              *ServerManager
-	baseCacheDir   string
-	thumbnailCache ImageCache
+	s               *ServerManager
+	baseCacheDir    string
+	thumbnailCache  ImageCache
+	cacheGeneration atomic.Uint64
 
 	cachedFullSizeCover           image.Image
 	cachedFullSizeCoverID         string
@@ -193,8 +195,12 @@ func (i *ImageManager) RefreshCachedArtistImageIfExpired(artistID string, imgURL
 	return err
 }
 
+// ImageCacheGeneration lets visible thumbnails detect an explicit cache clear.
+func (i *ImageManager) ImageCacheGeneration() uint64 { return i.cacheGeneration.Load() }
+
 // ClearInMemoryCache clears images from the in-memory caches.
 func (i *ImageManager) ClearInMemoryCache() {
+	i.cacheGeneration.Add(1)
 	i.thumbnailCache.Clear()
 	i.clearFullSizeCover()
 }

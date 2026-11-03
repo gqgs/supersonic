@@ -15,8 +15,10 @@ import (
 // once the image is available.
 // Any subsequent calls to Load will cancel the previous load if not yet completed.
 type ThumbnailLoader struct {
-	prevLoadCancel context.CancelFunc
-	im             ImageFetcher
+	prevLoadCancel  context.CancelFunc
+	im              ImageFetcher
+	request         uint64
+	cacheGeneration uint64
 
 	OnBeforeLoad func()
 	OnLoaded     func(image.Image)
@@ -33,9 +35,25 @@ func NewThumbnailLoader(im ImageFetcher, onLoaded func(image.Image)) ThumbnailLo
 	return ThumbnailLoader{im: im, OnLoaded: onLoaded}
 }
 
+// NeedsReload reports explicit cache invalidation, not ordinary paint refreshes.
+func (i *ThumbnailLoader) NeedsReload() bool {
+	return i.cacheGeneration != i.generation()
+}
+
+func (i *ThumbnailLoader) generation() uint64 {
+	if source, ok := i.im.(interface{ ImageCacheGeneration() uint64 }); ok {
+		return source.ImageCacheGeneration()
+	}
+	return 0
+}
+
 func (i *ThumbnailLoader) Load(coverID string) {
+	i.request++
+	request := i.request
+	i.cacheGeneration = i.generation()
 	if i.prevLoadCancel != nil {
 		i.prevLoadCancel()
+		i.prevLoadCancel = nil
 	}
 	if coverID == "" {
 		i.callOnLoaded(nil)
@@ -50,13 +68,16 @@ func (i *ThumbnailLoader) Load(coverID string) {
 	}
 	i.prevLoadCancel = i.im.GetCoverThumbnailAsync(coverID, func(img image.Image, err error) {
 		fyne.Do(func() {
+			if request != i.request {
+				return
+			}
 			if err != nil {
 				log.Printf("Error loading cover image: %s", err.Error())
 				i.callOnLoaded(nil)
 			} else {
 				i.callOnLoaded(img)
 			}
-			if i.prevLoadCancel != nil {
+			if request == i.request && i.prevLoadCancel != nil {
 				i.prevLoadCancel() // Cancel the context to release resources if not already cancelled
 			}
 		})

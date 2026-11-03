@@ -313,3 +313,14 @@ func (g *groupedReleasesHeader) Tapped(*fyne.PointEvent) {
 	g.onToggle(g.Collapsed)
 	g.Refresh()
 }
+
+// ReloadImages is an explicit retry, so repeated layout/paint refreshes do not
+// create an unbounded network retry loop after failures.
+func (g *GroupedReleases) ReloadImages() {
+	for _, section := range g.sections {
+		for _, object := range section.container.Objects {
+			card := object.(*GridViewItem)
+			card.ImgLoader.Load(card.coverArtID)
+		}
+	}
+}

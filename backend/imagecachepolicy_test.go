@@ -54,3 +54,26 @@ func TestTemporaryPortraitIsDeliveredButNotCached(t *testing.T) {
 		t.Fatal("temporary full-size image cached")
 	}
 }
+
+func TestClearCachesInvalidatesVisibleArtworkGeneration(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	root := t.TempDir()
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	manager := NewImageManager(ctx, &ServerManager{Server: portraitProvider{img: img}, ServerID: uuid.New()}, root)
+	if _, err := manager.GetCoverThumbnail("cover"); err != nil {
+		t.Fatal(err)
+	}
+	oldGeneration := manager.ImageCacheGeneration()
+	app := &App{cacheDir: root, ImageManager: manager}
+	app.ClearCaches()
+	if manager.ImageCacheGeneration() == oldGeneration {
+		t.Fatal("visible cards cannot detect cleared cache")
+	}
+	if _, ok := manager.GetCoverThumbnailFromCache("cover"); ok {
+		t.Fatal("memory image survived clear")
+	}
+	if _, err := os.Stat(manager.filePathForCover("cover")); !os.IsNotExist(err) {
+		t.Fatalf("disk image survived clear: %v", err)
+	}
+}

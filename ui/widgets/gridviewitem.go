@@ -418,6 +418,7 @@ type GridViewItem struct {
 
 	model         *GridViewItemModel
 	itemID        string
+	coverArtID    string
 	secondaryIDs  []string
 	primaryText   *ttwidget.Hyperlink
 	secondaryText *MultiHyperlink
@@ -492,7 +493,7 @@ func NewGridViewItem(placeholderResource fyne.Resource) *GridViewItem {
 }
 
 func (g *GridViewItem) NeedsUpdate(model *GridViewItemModel) bool {
-	return g.itemID != model.ID || !slices.Equal(g.secondaryIDs, model.SecondaryIDs) ||
+	return g.itemID != model.ID || g.coverArtID != model.CoverArtID || g.ImgLoader.NeedsReload() || !slices.Equal(g.secondaryIDs, model.SecondaryIDs) ||
 		(g.ShowSuffix && g.secondaryText.Suffix != model.Suffix) ||
 		(!g.ShowSuffix && g.secondaryText.Suffix != "")
 }
@@ -501,6 +502,7 @@ func (g *GridViewItem) Update(model *GridViewItemModel) {
 	g.Cover.IsFavorite = model.IsFavorite
 	g.Cover.EnableFavorite = model.CanFavorite
 	g.itemID = model.ID
+	g.coverArtID = model.CoverArtID
 	g.secondaryIDs = model.SecondaryIDs
 	g.primaryText.SetText(model.Name)
 	g.primaryText.SetToolTip(model.Name)

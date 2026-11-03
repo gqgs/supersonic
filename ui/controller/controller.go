@@ -375,7 +375,19 @@ func (c *Controller) ShowSettingsDialog(themeUpdateCallbk func(), themeFiles map
 		c.App.LocalPlayer.SetEqualizer(eq)
 	}
 	dlg.OnPageNeedsRefresh = c.RefreshPageFunc
-	dlg.OnClearCaches = func() { go c.App.ClearCaches() }
+	dlg.OnClearCaches = func() {
+		go func() {
+			c.App.ClearCaches()
+			fyne.Do(func() {
+				if c.ReloadFunc != nil {
+					c.ReloadFunc()
+				}
+				if c.RefreshPageFunc != nil {
+					c.RefreshPageFunc()
+				}
+			})
+		}()
+	}
 	pop := widget.NewModalPopUp(container.NewPadded(dlg), c.MainWindow.Canvas())
 	fynetooltip.AddPopUpToolTipLayer(pop)
 	dlg.OnDismiss = func() {

@@ -579,3 +579,16 @@ func (g *disabledGridWrap) Disabled() bool { return true }
 func (g *disabledGridWrap) Disable() {}
 
 func (g *disabledGridWrap) Enable() {}
+
+// ReloadImages retries only currently instantiated cards.
+func (g *GridView) ReloadImages() {
+	g.stateMutex.RLock()
+	cards := make([]*GridViewItem, 0, len(g.itemForIndex))
+	for _, card := range g.itemForIndex {
+		cards = append(cards, card)
+	}
+	g.stateMutex.RUnlock()
+	for _, card := range cards {
+		card.ImgLoader.Load(card.coverArtID)
+	}
+}
