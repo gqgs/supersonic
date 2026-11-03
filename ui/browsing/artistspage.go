@@ -26,6 +26,8 @@ func NewArtistsPage(cfg *backend.ArtistsPageConfig, pool *util.WidgetPool, contr
 	return NewGridViewPage(adapter, pool, mp, im)
 }
 
+func (a *artistsPageAdapter) SearchPlaceholder() string { return lang.L("Search artists") }
+
 func (a *artistsPageAdapter) Title() string { return lang.L("Artists") }
 
 func (a *artistsPageAdapter) Filter() mediaprovider.ArtistFilter {

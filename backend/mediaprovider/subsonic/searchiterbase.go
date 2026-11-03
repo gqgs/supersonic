@@ -7,7 +7,10 @@ import (
 	"github.com/supersonic-app/go-subsonic/subsonic"
 )
 
+const artistSearchPageSize = 50
+
 type searchIterBase struct {
+	artistsOnly   bool
 	musicFolderId string
 	query         string
 	artistOffset  int
@@ -22,6 +25,11 @@ func (s *searchIterBase) fetchResults() *subsonic.SearchResult3 {
 		"albumOffset":  strconv.Itoa(s.albumOffset),
 		"songOffset":   strconv.Itoa(s.songOffset),
 	}
+	if s.artistsOnly {
+		searchOpts["artistCount"] = strconv.Itoa(artistSearchPageSize)
+		searchOpts["albumCount"] = "0"
+		searchOpts["songCount"] = "0"
+	}
 	if s.musicFolderId != "" {
 		searchOpts["musicFolderId"] = s.musicFolderId
 	}
@@ -30,7 +38,7 @@ func (s *searchIterBase) fetchResults() *subsonic.SearchResult3 {
 		log.Println(err)
 		results = nil
 	}
-	if results == nil || len(results.Album)+len(results.Artist)+len(results.Song) == 0 {
+	if results == nil || (s.artistsOnly && len(results.Artist) == 0) || len(results.Album)+len(results.Artist)+len(results.Song) == 0 {
 		return nil
 	}
 	return results

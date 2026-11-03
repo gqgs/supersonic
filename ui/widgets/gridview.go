@@ -356,11 +356,11 @@ func (g *GridView) createNewItemCard() fyne.CanvasObject {
 }
 
 func (g *GridView) doUpdateItemCard(itemIdx int, card *GridViewItem) {
+	var item GridViewItemModel
+	g.stateMutex.Lock()
 	if itemIdx > g.highestShown {
 		g.highestShown = itemIdx
 	}
-	var item GridViewItemModel
-	g.stateMutex.Lock()
 	// itemIdx can rarely be out of range if the data is being updated
 	// as the view is requested to refresh
 	if itemIdx < len(g.items) {
@@ -434,38 +434,57 @@ func (g *GridView) checkFetchMoreItems(count int) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	g.fetchCancel = cancel
-	go func() {
-		// keep repeating the fetch task as long as the user
-		// has scrolled near the bottom
-		for !g.done && g.highestShown >= g.lenItems()-10 {
-			n := 0
-			for !g.done && n < count {
-				items := g.iter.NextN(batchFetchSize)
-				select {
-				case <-ctx.Done():
-					return
-				default:
-					g.stateMutex.Lock()
-					g.items = append(g.items, items...)
-					g.stateMutex.Unlock()
-					if len(items) < batchFetchSize {
-						g.done = true
-					}
-					n += len(items)
-					fyne.DoAndWait(func() {
-						g.loadingDots.Stop()
-						if len(items) > 0 {
-							g.grid.Refresh()
-						}
-					})
-				}
+	// Capture the iterator: a cancelled worker must never consume a new query's
+	// iterator after Reset replaces g.iter.
+	iter := g.iter
+	go g.fetchMoreItems(ctx, iter, count, func() {
+		fyne.DoAndWait(func() {
+			if ctx.Err() != nil {
+				return
 			}
-		}
-		// call cancelfunc to release Context resources
+			g.loadingDots.Stop()
+			g.grid.Refresh()
+		})
+	})
+}
+
+func (g *GridView) fetchMoreItems(ctx context.Context, iter GridViewIterator, count int, refresh func()) {
+	fetched := 0
+	for {
 		g.stateMutex.Lock()
-		g.cancelFetch()
+		if ctx.Err() != nil {
+			g.stateMutex.Unlock()
+			return
+		}
+		if g.done || (fetched == 0 && g.highestShown < len(g.items)-10) {
+			// The refresh callback already stopped the spinner on the UI thread.
+			// Release the fetch context without touching widgets from this worker.
+			if g.fetchCancel != nil {
+				g.fetchCancel()
+				g.fetchCancel = nil
+			}
+			g.stateMutex.Unlock()
+			return
+		}
 		g.stateMutex.Unlock()
-	}()
+
+		items := iter.NextN(batchFetchSize)
+		g.stateMutex.Lock()
+		// Reset/cancellation and result application use the same lock. An old
+		// response cannot append to, finish, or cancel the new query's state.
+		if ctx.Err() != nil {
+			g.stateMutex.Unlock()
+			return
+		}
+		g.items = append(g.items, items...)
+		g.done = len(items) < batchFetchSize
+		g.stateMutex.Unlock()
+		refresh()
+		fetched += len(items)
+		if fetched >= count {
+			fetched = 0
+		}
+	}
 }
 
 // must be called with stateMutex locked for writing
