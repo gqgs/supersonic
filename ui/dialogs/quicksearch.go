@@ -14,7 +14,6 @@ import (
 
 type QuickSearch struct {
 	SearchDialog *SearchDialog
-	results      []*mediaprovider.SearchResult
 	mp           mediaprovider.MediaProvider
 
 	OnPlay          func(t mediaprovider.ContentType, id string, item any, shuffle bool)
@@ -36,21 +35,26 @@ func NewQuickSearch(mp mediaprovider.MediaProvider, im util.ImageFetcher) *Quick
 }
 
 func (q *QuickSearch) onSearched(query string) []*mediaprovider.SearchResult {
-	if query != "" {
-		if res, err := q.mp.SearchAll(query, 50); err != nil {
-			q.results = nil
-			log.Printf("Error searching: %s", err.Error())
-		} else {
-			q.results = res
-		}
+	if query == "" {
+		return nil
 	}
-	return q.results
+	results, err := q.mp.SearchAll(query, 50)
+	if err != nil {
+		log.Printf("Error searching: %s", err.Error())
+		return nil
+	}
+	return results
 }
 
 func (q *QuickSearch) showMenu(idx int, pos fyne.Position) {
-	cType := q.results[idx].Type
-	id := q.results[idx].ID
-	item := q.results[idx].Item
+	// Use the displayed results, not a background request's private results.
+	results := q.SearchDialog.searchResults
+	if idx < 0 || idx >= len(results) {
+		return
+	}
+	cType := results[idx].Type
+	id := results[idx].ID
+	item := results[idx].Item
 
 	canvas := fyne.CurrentApp().Driver().CanvasForObject(q.SearchDialog)
 
