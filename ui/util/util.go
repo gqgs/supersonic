@@ -313,6 +313,8 @@ func DisplayReleaseType(releaseTypes mediaprovider.ReleaseTypes) string {
 		baseType = lang.L("Single")
 	case releaseTypes&mediaprovider.ReleaseTypeSoundtrack > 0:
 		baseType = lang.L("Soundtrack")
+	case releaseTypes&mediaprovider.ReleaseTypeOther > 0:
+		baseType = lang.L("Other")
 	}
 
 	var modifiers []string

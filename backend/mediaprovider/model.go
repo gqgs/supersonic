@@ -35,6 +35,7 @@ const (
 	ReleaseTypeSingle         ReleaseType = 0x2000
 	ReleaseTypeSoundtrack     ReleaseType = 0x4000
 	ReleaseTypeSpokenWord     ReleaseType = 0x8000
+	ReleaseTypeOther          ReleaseType = 0x10000
 )
 
 type Library struct {

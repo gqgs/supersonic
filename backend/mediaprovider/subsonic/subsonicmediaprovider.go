@@ -724,7 +724,7 @@ func normalizeReleaseTypes(releaseTypes []string) mediaprovider.ReleaseTypes {
 			mpReleaseTypes |= mediaprovider.ReleaseTypeCompilation
 		case "demo":
 			mpReleaseTypes |= mediaprovider.ReleaseTypeDemo
-		case "djmix":
+		case "djmix", "dj-mix":
 			mpReleaseTypes |= mediaprovider.ReleaseTypeDJMix
 		case "ep":
 			mpReleaseTypes |= mediaprovider.ReleaseTypeEP
@@ -734,8 +734,10 @@ func normalizeReleaseTypes(releaseTypes []string) mediaprovider.ReleaseTypes {
 			mpReleaseTypes |= mediaprovider.ReleaseTypeInterview
 		case "live":
 			mpReleaseTypes |= mediaprovider.ReleaseTypeLive
-		case "mixtape":
+		case "mixtape", "mixtape/street":
 			mpReleaseTypes |= mediaprovider.ReleaseTypeMixtape
+		case "other":
+			mpReleaseTypes |= mediaprovider.ReleaseTypeOther
 		case "remix":
 			mpReleaseTypes |= mediaprovider.ReleaseTypeRemix
 		case "single":
