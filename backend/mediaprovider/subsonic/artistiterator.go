@@ -93,6 +93,7 @@ func (s *subsonicMediaProvider) newSearchArtistIter(query string, filter mediapr
 	return &searchArtistIter{
 		searchIterBase: searchIterBase{
 			query:         query,
+			artistsOnly:   true,
 			s:             s.client,
 			musicFolderId: s.currentLibraryID,
 		},
@@ -103,12 +104,13 @@ func (s *subsonicMediaProvider) newSearchArtistIter(query string, filter mediapr
 }
 
 func (s *searchArtistIter) Next() *mediaprovider.Artist {
-	if s.done {
+	if s.done && s.prefetched == nil {
 		return nil
 	}
 
-	// prefetch more search results from server
-	if s.prefetched == nil {
+	// Duplicate-only pages must not hide later matches. Advance using the
+	// raw response count, not the deduplicated count.
+	for s.prefetched == nil && !s.done {
 		results := s.searchIterBase.fetchResults()
 		if results == nil {
 			s.done = true
@@ -119,6 +121,9 @@ func (s *searchArtistIter) Next() *mediaprovider.Artist {
 		// add results from artists search
 		s.addNewArtists(results.Artist)
 		s.artistOffset += len(results.Artist)
+		if len(results.Artist) < artistSearchPageSize {
+			s.done = true
+		}
 	}
 
 	// return from prefetched results

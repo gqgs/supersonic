@@ -29,24 +29,33 @@ func TestSearchEntryDebouncesTypingAndClearsImmediately(t *testing.T) {
 	entry := NewSearchEntry()
 	var queries []string
 	entry.OnSearched = func(s string) { queries = append(queries, s) }
+	next := func() func() {
+		t.Helper()
+		select {
+		case f := <-queue:
+			return f
+		case <-time.After(3 * time.Second):
+			t.Fatal("search did not dispatch")
+			return nil
+		}
+	}
+	started := time.Now()
 	entry.SetText("r")
-	// A pause longer than the former 200 ms should no longer issue a request.
-	select {
-	case <-queue:
+	queued := next()
+	if time.Since(started) < 500*time.Millisecond {
 		t.Fatal("search fired before 500 ms")
-	case <-time.After(250 * time.Millisecond):
 	}
+	// A timer may already have fired when the next edit arrives. Its queued
+	// callback must be discarded, not treated as a search for the new text.
+	started = time.Now()
 	entry.SetText("radiohead")
-	select {
-	case <-queue:
-		t.Fatal("typing did not reset debounce")
-	case <-time.After(300 * time.Millisecond):
+	queued()
+	if len(queries) != 0 {
+		t.Fatalf("stale timer emitted a search: %v", queries)
 	}
-	select {
-	case f := <-queue:
-		f()
-	case <-time.After(2 * time.Second):
-		t.Fatal("search did not fire")
+	next()()
+	if time.Since(started) < 500*time.Millisecond {
+		t.Fatal("typing did not reset debounce")
 	}
 	if len(queries) != 1 || queries[0] != "radiohead" {
 		t.Fatalf("queries: %v", queries)

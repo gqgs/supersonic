@@ -146,6 +146,9 @@ func (g *GridViewPage[M, F]) createTitleAndSort() {
 func (g *GridViewPage[M, F]) createSearchAndFilter() {
 	g.searcher = widgets.NewSearchEntry()
 	g.searcher.PlaceHolder = lang.L("Search page")
+	if a, ok := g.adapter.(interface{ SearchPlaceholder() string }); ok {
+		g.searcher.PlaceHolder = a.SearchPlaceholder()
+	}
 	g.searcher.Text = g.searchText
 	g.searcher.OnSearched = g.OnSearched
 	g.filterBtn = g.adapter.FilterButton()
