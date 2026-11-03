@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// Uncacheable images may be temporary server placeholders. Keep their cache
-// policy attached to the decoded image all the way to ImageManager.
+// Keep the server cache policy attached to the decoded image all the way to
+// ImageManager. A no-store response can contain genuine artwork.
 type uncacheableImage struct{ image.Image }
 
 func (uncacheableImage) Cacheable() bool { return false }
@@ -57,16 +57,20 @@ func decodeCoverResponse(resp *http.Response) (image.Image, bool, error) {
 		return nil, retry, fmt.Errorf("cover image returned HTTP %d", resp.StatusCode)
 	}
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
-	if strings.Contains(contentType, "json") || strings.Contains(contentType, "xml") || strings.HasPrefix(contentType, "text/") {
-		return nil, false, fmt.Errorf("cover image returned non-image content type %q", contentType)
-	}
+	// Some servers mislabel binary artwork. Let the decoder inspect the bytes,
+	// just as the original client did, before classifying an error response.
 	img, _, err := image.Decode(resp.Body)
 	if err != nil {
+		if strings.Contains(contentType, "json") || strings.Contains(contentType, "xml") || strings.HasPrefix(contentType, "text/") {
+			return nil, false, fmt.Errorf("cover image returned non-image content type %q: %w", contentType, err)
+		}
 		return nil, false, fmt.Errorf("decoding cover image: %w", err)
 	}
 	for _, directive := range strings.Split(resp.Header.Get("Cache-Control"), ",") {
 		if strings.EqualFold(strings.TrimSpace(directive), "no-store") {
-			return uncacheableImage{img}, true, nil
+			// Cache policy is not a pending-resolution signal. Only transient
+			// HTTP statuses trigger retries; return successful artwork immediately.
+			return uncacheableImage{img}, false, nil
 		}
 	}
 	return img, false, nil
