@@ -37,7 +37,6 @@ type SearchDialog struct {
 
 	imgSource                util.ImageFetcher
 	resultsMutex             sync.RWMutex
-	resultsGeneration        int
 	pendingResultsGeneration int
 	searchResults            []*mediaprovider.SearchResult
 	selectedIndex            int
@@ -62,6 +61,12 @@ func NewSearchDialog(im util.ImageFetcher, title, dismissBtn string, onSearched 
 
 	se := newSearchEntry()
 	se.OnSearched = sd.onSearched
+	onChanged := se.OnChanged
+	se.OnChanged = func(query string) {
+		// Invalidate immediately, including while the next query is debouncing.
+		sd.pendingResultsGeneration++
+		onChanged(query)
+	}
 	se.OnSubmitted = func(_ string) {
 		sd.onSelected(sd.selectedIndex)
 	}
@@ -164,26 +169,29 @@ func (sd *SearchDialog) setResults(results []*mediaprovider.SearchResult) {
 }
 
 func (sd *SearchDialog) onSearched(query string) {
+	sd.search(query, fyne.Do)
+}
+
+// Called on the UI thread. Only the provider call runs in the background.
+func (sd *SearchDialog) search(query string, dispatch func(func())) {
 	sd.loadingDots.Start()
-	var results []*mediaprovider.SearchResult
-	sd.pendingResultsGeneration += 1
-	var generation = sd.pendingResultsGeneration
+	sd.pendingResultsGeneration++
+	generation := sd.pendingResultsGeneration
+	onSearched := sd.OnSearched
 	go func() {
-		res := sd.OnSearched(query)
-		if len(res) == 0 {
+		results := onSearched(query)
+		if len(results) == 0 {
 			log.Println("No results matched the query.")
-		} else {
-			results = res
 		}
-		if sd.resultsGeneration < generation {
-			fyne.Do(func() {
-				if sd.pendingResultsGeneration == generation {
-					sd.loadingDots.Stop()
-				}
-				sd.setResults(results)
-			})
-			sd.resultsGeneration = generation
-		}
+		dispatch(func() {
+			// Check at application time: a newer query may have been entered
+			// after this request completed but before its UI callback runs.
+			if sd.pendingResultsGeneration != generation {
+				return
+			}
+			sd.loadingDots.Stop()
+			sd.setResults(results)
+		})
 	}()
 }
 

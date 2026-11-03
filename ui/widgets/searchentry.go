@@ -11,6 +11,8 @@ import (
 	"github.com/supersonic-app/supersonic/ui/util"
 )
 
+const searchDebounceDelay = 500 * time.Millisecond
+
 // SearchEntry is a search entry widget that will issue a search command
 // (aka call OnSearched) when a short span of time has elapsed since
 // the user typed into the widget.
@@ -36,14 +38,19 @@ func (sf *SearchEntry) Init() {
 	sf.ActionItem = NewClearTextButton(func() {
 		sf.SetText("")
 	})
-	debounceFunc := util.NewDebouncer(200*time.Millisecond, func() {
-		sf.sendSearch(sf.Entry.Text)
+	debounceFunc := util.NewDebouncer(searchDebounceDelay, func() {
+		if sf.Entry.Text != "" {
+			sf.sendSearch(sf.Entry.Text)
+		}
 	})
 	sf.Entry.OnChanged = func(_ string) {
 		if sf.updateActionButton() {
 			sf.ActionItem.Refresh()
 		}
 		debounceFunc()
+		if sf.Entry.Text == "" {
+			sf.sendSearch("")
+		}
 	}
 }
 

@@ -248,6 +248,11 @@ func ImageAspect(im image.Image) float32 {
 // Debouncer returns a function that will call callOnDone when
 // it has not been invoked since the last dur interval.
 func NewDebouncer(dur time.Duration, callOnDone func()) func() {
+	return newDebouncer(dur, callOnDone, fyne.Do)
+}
+
+func newDebouncer(dur time.Duration, callOnDone func(), dispatch func(func())) func() {
+	var generation uint64
 	var mu sync.Mutex
 	var timer *time.Timer
 	return func() {
@@ -257,8 +262,18 @@ func NewDebouncer(dur time.Duration, callOnDone func()) func() {
 		if timer != nil {
 			timer.Stop()
 		}
+		generation++
+		current := generation
 		timer = time.AfterFunc(dur, func() {
-			fyne.Do(callOnDone)
+			dispatch(func() {
+				// Stop cannot retract a callback already queued on the UI thread.
+				mu.Lock()
+				latest := current == generation
+				mu.Unlock()
+				if latest {
+					callOnDone()
+				}
+			})
 		})
 	}
 }
