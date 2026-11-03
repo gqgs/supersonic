@@ -2,6 +2,7 @@ package subsonic
 
 import (
 	"errors"
+	"fmt"
 	"image"
 	"io"
 	"math"
@@ -161,7 +162,7 @@ func (s *subsonicMediaProvider) GetArtist(artistID string) (*mediaprovider.Artis
 		Artist: mediaprovider.Artist{
 			ID:         ar.ID,
 			Name:       ar.Name,
-			CoverArtID: ar.CoverArt,
+			CoverArtID: artistCoverArtID(ar),
 			Favorite:   !ar.Starred.IsZero(),
 			AlbumCount: ar.AlbumCount,
 		},
@@ -189,7 +190,39 @@ func (s *subsonicMediaProvider) GetArtistInfo(artistID string) (*mediaprovider.A
 	}, nil
 }
 
+// Internal cover ID for a genuine artist image URL supplied by the server.
+const artistImageURLPrefix = "supersonic-artist-image:"
+
+func artistCoverArtID(ar *subsonic.ArtistID3) string {
+	if ar.CoverArt != "" {
+		return ar.CoverArt
+	}
+	u, err := url.Parse(ar.ArtistImageUrl)
+	if err == nil && u.Host != "" && (u.Scheme == "http" || u.Scheme == "https") {
+		return artistImageURLPrefix + u.String()
+	}
+	return ""
+}
+
 func (s *subsonicMediaProvider) GetCoverArt(id string, size int) (image.Image, error) {
+	if strings.HasPrefix(id, artistImageURLPrefix) {
+		imageURL := strings.TrimPrefix(id, artistImageURLPrefix)
+		u, err := url.Parse(imageURL)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return nil, errors.New("invalid artist image URL")
+		}
+		// Do not attach Subsonic credentials to an external image URL.
+		resp, err := s.client.Client.Get(imageURL)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return nil, fmt.Errorf("artist image returned HTTP %d", resp.StatusCode)
+		}
+		img, _, err := image.Decode(resp.Body)
+		return img, err
+	}
 	params := map[string]string{}
 	if size > 0 {
 		params["size"] = strconv.Itoa(size)
@@ -760,7 +793,7 @@ func toArtistFromID3(ar *subsonic.ArtistID3) *mediaprovider.Artist {
 	}
 	return &mediaprovider.Artist{
 		ID:         ar.ID,
-		CoverArtID: ar.CoverArt,
+		CoverArtID: artistCoverArtID(ar),
 		Name:       ar.Name,
 		Favorite:   !ar.Starred.IsZero(),
 		AlbumCount: ar.AlbumCount,

@@ -3,6 +3,7 @@ package backend
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"image"
@@ -408,5 +409,10 @@ func (im *ImageManager) pruneOnDiskCache() {
 var illegalFilename = regexp.MustCompile("[" + regexp.QuoteMeta("`~!@#$%^&*+={}|/\\:;\"'<>?") + "]")
 
 func sanitizeFileName(s string) string {
-	return illegalFilename.ReplaceAllString(s, "_")
+	name := illegalFilename.ReplaceAllString(s, "_")
+	// Server-provided artist image URLs can exceed filesystem name limits.
+	if strings.Contains(s, "://") || len(name) > 200 {
+		return fmt.Sprintf("%x", sha256.Sum256([]byte(s)))
+	}
+	return name
 }

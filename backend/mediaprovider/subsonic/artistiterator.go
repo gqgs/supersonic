@@ -151,7 +151,7 @@ func (s *searchArtistIter) addNewArtists(artists []*subsonic.ArtistID3) {
 		}
 		s.prefetched = append(s.prefetched, artist)
 		if s.prefetchCB != nil {
-			go s.prefetchCB(artist.CoverArt)
+			go s.prefetchCB(artistCoverArtID(artist))
 		}
 		s.artistIDset[artist.ID] = true
 	}

@@ -94,18 +94,23 @@ type gridViewArtistIterator struct {
 func (g gridViewArtistIterator) NextN(n int) []GridViewItemModel {
 	artists := g.iter.NextN(n)
 	return sharedutil.MapSlice(artists, func(ar *mediaprovider.Artist) GridViewItemModel {
-		albumsLabel := lang.L("albums")
-		if ar.AlbumCount == 1 {
-			albumsLabel = lang.L("album")
+		var secondary []string
+		// Omitted Subsonic counts decode as zero. Do not present that as a
+		// known catalog total, and never invent a count from a search page.
+		if ar.AlbumCount > 0 {
+			albumsLabel := lang.L("albums")
+			if ar.AlbumCount == 1 {
+				albumsLabel = lang.L("album")
+			}
+			fallback := fmt.Sprintf("%d %s", ar.AlbumCount, albumsLabel)
+			secondary = []string{lang.LocalizePluralKey("{{.albumsCount}} albums",
+				fallback, ar.AlbumCount, map[string]string{"albumsCount": strconv.Itoa(ar.AlbumCount)})}
 		}
-		fallbackAlbumsMsg := fmt.Sprintf("%d %s", ar.AlbumCount, albumsLabel)
-		albumsMsg := lang.LocalizePluralKey("{{.albumsCount}} albums",
-			fallbackAlbumsMsg, ar.AlbumCount, map[string]string{"albumsCount": strconv.Itoa(ar.AlbumCount)})
 		return GridViewItemModel{
 			Name:        ar.Name,
 			ID:          ar.ID,
 			CoverArtID:  ar.CoverArtID,
-			Secondary:   []string{albumsMsg},
+			Secondary:   secondary,
 			CanFavorite: true,
 			IsFavorite:  ar.Favorite,
 		}
