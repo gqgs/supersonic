@@ -16,17 +16,19 @@ import (
 )
 
 type GroupedReleasesModel struct {
-	Albums       []GridViewItemModel
-	Compilations []GridViewItemModel
-	EPs          []GridViewItemModel
-	Singles      []GridViewItemModel
+	Albums        []GridViewItemModel
+	SinglesAndEPs []GridViewItemModel
+	LiveAlbums    []GridViewItemModel
+	Compilations  []GridViewItemModel
+	Others        []GridViewItemModel
 }
 
 type GroupedReleasesSectionVisibility struct {
-	Albums       bool
-	Compilations bool
-	EPs          bool
-	Singles      bool
+	Albums        bool
+	SinglesAndEPs bool
+	LiveAlbums    bool
+	Compilations  bool
+	Others        bool
 }
 
 type GroupedReleases struct {
@@ -52,7 +54,7 @@ type GroupedReleases struct {
 	imageFetcher       util.ImageFetcher
 	cardPool           sync.Pool
 
-	sections [4]groupedReleasesSection
+	sections [5]groupedReleasesSection
 
 	container *container.Scroll
 }
@@ -71,7 +73,7 @@ func NewGroupedReleases(model GroupedReleasesModel, fetch util.ImageFetcher) *Gr
 	g.ExtendBaseWidget(g)
 
 	cardSize := fyne.NewSquareSize(backend.AppInstance().Config.GridView.CardSize)
-	sections := []string{lang.L("Albums"), lang.L("Compilations"), lang.L("EPs"), lang.L("Singles")}
+	sections := []string{lang.L("Albums"), lang.L("Singles & EPs"), lang.L("Live Albums"), lang.L("Compilations"), lang.L("Others")}
 	for i, s := range sections {
 		_i := i
 		g.sections[i].titleRow = newGroupedReleasesHeader(s, func(collapse bool) {
@@ -96,24 +98,17 @@ func NewGroupedReleases(model GroupedReleasesModel, fetch util.ImageFetcher) *Gr
 }
 
 func (g *GroupedReleases) GetSectionVisibility() GroupedReleasesSectionVisibility {
-	v := GroupedReleasesSectionVisibility{true, true, true, true}
-	if g.sections[0].titleRow.Collapsed {
-		v.Albums = false
+	return GroupedReleasesSectionVisibility{
+		Albums:        !g.sections[0].titleRow.Collapsed,
+		SinglesAndEPs: !g.sections[1].titleRow.Collapsed,
+		LiveAlbums:    !g.sections[2].titleRow.Collapsed,
+		Compilations:  !g.sections[3].titleRow.Collapsed,
+		Others:        !g.sections[4].titleRow.Collapsed,
 	}
-	if g.sections[1].titleRow.Collapsed {
-		v.Compilations = false
-	}
-	if g.sections[2].titleRow.Collapsed {
-		v.EPs = false
-	}
-	if g.sections[3].titleRow.Collapsed {
-		v.Singles = false
-	}
-	return v
 }
 
 func (g *GroupedReleases) SetSectionVisibility(v GroupedReleasesSectionVisibility, refresh bool) {
-	for i, b := range []bool{v.Albums, v.Compilations, v.EPs, v.Singles} {
+	for i, b := range []bool{v.Albums, v.SinglesAndEPs, v.LiveAlbums, v.Compilations, v.Others} {
 		g.sections[i].titleRow.Collapsed = !b
 		g.sections[i].container.Hidden = !b
 	}
@@ -136,7 +131,7 @@ func (g *GroupedReleases) ScrollToOffset(offs float32) {
 
 func (g *GroupedReleases) Refresh() {
 	gridSize := backend.AppInstance().Config.GridView.CardSize
-	sectionItems := [4][]GridViewItemModel{g.Model.Albums, g.Model.Compilations, g.Model.EPs, g.Model.Singles}
+	sectionItems := [5][]GridViewItemModel{g.Model.Albums, g.Model.SinglesAndEPs, g.Model.LiveAlbums, g.Model.Compilations, g.Model.Others}
 	layoutSize := fyne.NewSize(0, 0)
 	for i, items := range sectionItems {
 		lenItems := len(items)

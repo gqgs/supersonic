@@ -2,7 +2,6 @@ package browsing
 
 import (
 	"log"
-	"slices"
 	"sort"
 	"strconv"
 
@@ -258,31 +257,48 @@ func (a *ArtistPage) getGroupedReleasesModel() widgets.GroupedReleasesModel {
 	if a.artistInfo == nil {
 		return widgets.GroupedReleasesModel{}
 	}
-	albums := []*mediaprovider.Album{}
-	compilations := []*mediaprovider.Album{}
-	eps := []*mediaprovider.Album{}
-	singles := []*mediaprovider.Album{}
-
+	groups := make([][]*mediaprovider.Album, 5)
 	for _, album := range a.artistInfo.Albums {
-		switch rt := album.ReleaseTypes; {
-		case rt&mediaprovider.ReleaseTypeEP > 0:
-			eps = append(eps, album)
-		case rt&mediaprovider.ReleaseTypeCompilation > 0:
-			compilations = append(compilations, album)
-		case rt&mediaprovider.ReleaseTypeSingle > 0:
-			singles = append(singles, album)
-		default:
-			albums = append(albums, album)
+		group := releaseSection(album.ReleaseTypes)
+		groups[group] = append(groups[group], album)
+	}
+	a.sortAlbumsSlices(groups...)
+	return widgets.GroupedReleasesModel{
+		Albums:        sharedutil.MapSlice(groups[0], a.albumToGridViewItemModel),
+		SinglesAndEPs: sharedutil.MapSlice(groups[1], a.albumToGridViewItemModel),
+		LiveAlbums:    sharedutil.MapSlice(groups[2], a.albumToGridViewItemModel),
+		Compilations:  sharedutil.MapSlice(groups[3], a.albumToGridViewItemModel),
+		Others:        sharedutil.MapSlice(groups[4], a.albumToGridViewItemModel),
+	}
+}
+
+// Secondary types override Album; live compilations belong with live releases.
+// Single/EP takes precedence over miscellaneous secondary types (e.g. Remix).
+// Zero means missing metadata and retains the ordinary album fallback.
+func releaseSection(rt mediaprovider.ReleaseTypes) int {
+	switch {
+	case rt&mediaprovider.ReleaseTypeLive != 0:
+		return 2
+	case rt&mediaprovider.ReleaseTypeCompilation != 0:
+		return 3
+	case rt&(mediaprovider.ReleaseTypeSingle|mediaprovider.ReleaseTypeEP) != 0:
+		return 1
+	case rt&^mediaprovider.ReleaseTypeAlbum != 0:
+		return 4
+	default:
+		return 0
+	}
+}
+
+func (a *ArtistPage) useGroupedReleases() bool {
+	if a.artistInfo != nil {
+		for _, album := range a.artistInfo.Albums {
+			if releaseSection(album.ReleaseTypes) != 0 {
+				return true
+			}
 		}
 	}
-
-	a.sortAlbumsSlices(albums, compilations, eps, singles)
-	return widgets.GroupedReleasesModel{
-		Albums:       sharedutil.MapSlice(albums, a.albumToGridViewItemModel),
-		Compilations: sharedutil.MapSlice(compilations, a.albumToGridViewItemModel),
-		EPs:          sharedutil.MapSlice(eps, a.albumToGridViewItemModel),
-		Singles:      sharedutil.MapSlice(singles, a.albumToGridViewItemModel),
-	}
+	return false
 }
 
 func (a *ArtistPage) sortAlbumsSlices(slices ...[]*mediaprovider.Album) {
@@ -347,14 +363,7 @@ func (a *ArtistPage) showAlbumGrid(reSort bool) {
 	}
 	a.activeView = 0
 
-	allAlbums := func() bool {
-		return slices.IndexFunc(a.artistInfo.Albums, func(al *mediaprovider.Album) bool {
-			return al.ReleaseTypes&mediaprovider.ReleaseTypeCompilation > 0 ||
-				al.ReleaseTypes&mediaprovider.ReleaseTypeEP > 0 ||
-				al.ReleaseTypes&mediaprovider.ReleaseTypeSingle > 0
-		}) < 0
-	}
-	useGroupedReleases := a.artistInfo != nil && len(a.artistInfo.Albums) <= 50 && !allAlbums()
+	useGroupedReleases := a.useGroupedReleases()
 
 	if a.albumGrid == nil && a.groupedReleases == nil {
 		if a.artistInfo == nil {
