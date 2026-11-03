@@ -358,5 +358,9 @@
     "wrong username/password": "잘못된 사용자명/비밀번호",
     "x_minutes_ago": {
         "other": "59 minutes ago"
+    },
+    "{{.albumsCount}} albums": {
+        "one": "{{.albumsCount}} 앨범",
+        "other": "{{.albumsCount}} 앨범"
     }
 }

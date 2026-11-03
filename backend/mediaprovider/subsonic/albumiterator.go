@@ -136,6 +136,7 @@ func (s *subsonicMediaProvider) newSearchAlbumIter(query string, filter mediapro
 	return &searchAlbumIter{
 		searchIterBase: searchIterBase{
 			query:         query,
+			albumsOnly:    true,
 			s:             s.client,
 			musicFolderId: s.currentLibraryID,
 		},
@@ -146,12 +147,13 @@ func (s *subsonicMediaProvider) newSearchAlbumIter(query string, filter mediapro
 }
 
 func (s *searchAlbumIter) Next() *mediaprovider.Album {
-	if s.done {
+	if s.done && s.prefetched == nil {
 		return nil
 	}
 
-	// prefetch more search results from server
-	if s.prefetched == nil {
+	// Filtering or deduplication may consume an entire page. Keep paging
+	// using raw response offsets until a match or the end is reached.
+	for s.prefetched == nil && !s.done {
 		results := s.searchIterBase.fetchResults()
 		if results == nil {
 			s.done = true
@@ -163,30 +165,9 @@ func (s *searchAlbumIter) Next() *mediaprovider.Album {
 		s.addNewAlbums(results.Album)
 		s.albumOffset += len(results.Album)
 
-		// add results from artists search
-		for _, artist := range results.Artist {
-			artist, err := s.s.GetArtist(artist.ID)
-			if err != nil || artist == nil {
-				log.Printf("error fetching artist: %s", err.Error())
-			} else {
-				s.addNewAlbums(artist.Album)
-			}
+		if len(results.Album) < albumSearchPageSize {
+			s.done = true
 		}
-		s.artistOffset += len(results.Artist)
-
-		// add results from songs search
-		for _, song := range results.Song {
-			if song.AlbumID == "" {
-				continue
-			}
-			album, err := s.s.GetAlbum(song.AlbumID)
-			if err != nil || album == nil {
-				log.Printf("error fetching album: %s", err.Error())
-			} else {
-				s.addNewAlbums([]*subsonic.AlbumID3{album})
-			}
-		}
-		s.songOffset += len(results.Song)
 	}
 
 	// return from prefetched results

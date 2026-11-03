@@ -83,9 +83,10 @@ func main() {
 			// "trick" Fyne into loading translations for configured language
 			// by pretending it's the translation for the system locale
 			name := lang.SystemLocale().LanguageString()
-			lang.AddTranslations(fyne.NewStaticResource(name+".json", content))
-			success = true
-		} else {
+			err = lang.AddTranslations(fyne.NewStaticResource(name+".json", content))
+			success = err == nil
+		}
+		if err != nil {
 			log.Printf("Error loading translation file %s: %s\n", tr.TranslationFileName, err.Error())
 		}
 	}

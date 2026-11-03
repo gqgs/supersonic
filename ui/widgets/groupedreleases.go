@@ -4,7 +4,6 @@ import (
 	"sync"
 
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/lang"
 	"fyne.io/fyne/v2/layout"
@@ -56,7 +55,9 @@ type GroupedReleases struct {
 
 	sections [5]groupedReleasesSection
 
-	container *container.Scroll
+	container      *container.Scroll
+	visibleArtwork map[*GridViewItem]bool
+	artworkPaused  bool
 }
 
 type groupedReleasesSection struct {
@@ -72,7 +73,7 @@ func NewGroupedReleases(model GroupedReleasesModel, fetch util.ImageFetcher) *Gr
 	g.cardPool.New = func() any { return g.createNewItemCard() }
 	g.ExtendBaseWidget(g)
 
-	cardSize := fyne.NewSquareSize(backend.AppInstance().Config.GridView.CardSize)
+	cardSize := fyne.NewSquareSize(groupedCardSize())
 	sections := []string{lang.L("Albums"), lang.L("Singles & EPs"), lang.L("Live Albums"), lang.L("Compilations"), lang.L("Others")}
 	for i, s := range sections {
 		_i := i
@@ -82,7 +83,7 @@ func NewGroupedReleases(model GroupedReleasesModel, fetch util.ImageFetcher) *Gr
 			} else {
 				g.sections[_i].container.Show()
 			}
-			canvas.Refresh(g)
+			g.Refresh()
 		})
 		g.sections[i].container = container.NewGridWrap(cardSize)
 	}
@@ -93,6 +94,7 @@ func NewGroupedReleases(model GroupedReleasesModel, fetch util.ImageFetcher) *Gr
 		vbox.Add(g.sections[i].container)
 	}
 	g.container = container.NewVScroll(vbox)
+	g.container.OnScrolled = func(fyne.Position) { g.updateVisibleArtwork() }
 
 	return g
 }
@@ -118,7 +120,7 @@ func (g *GroupedReleases) SetSectionVisibility(v GroupedReleasesSectionVisibilit
 }
 
 func (g *GroupedReleases) CreateRenderer() fyne.WidgetRenderer {
-	return widget.NewSimpleRenderer(g.container)
+	return &groupedArtworkRenderer{WidgetRenderer: widget.NewSimpleRenderer(g.container), group: g}
 }
 
 func (g *GroupedReleases) GetScrollOffset() float32 {
@@ -127,10 +129,12 @@ func (g *GroupedReleases) GetScrollOffset() float32 {
 
 func (g *GroupedReleases) ScrollToOffset(offs float32) {
 	g.container.ScrollToOffset(fyne.NewPos(0, offs))
+	g.updateVisibleArtwork()
 }
 
 func (g *GroupedReleases) Refresh() {
-	gridSize := backend.AppInstance().Config.GridView.CardSize
+	g.artworkPaused = false
+	gridSize := groupedCardSize()
 	sectionItems := [5][]GridViewItemModel{g.Model.Albums, g.Model.SinglesAndEPs, g.Model.LiveAlbums, g.Model.Compilations, g.Model.Others}
 	layoutSize := fyne.NewSize(0, 0)
 	for i, items := range sectionItems {
@@ -138,6 +142,9 @@ func (g *GroupedReleases) Refresh() {
 		objects := g.sections[i].container.Objects
 		// clear out excess cards in this section
 		for x := lenItems; x < len(objects); x++ {
+			card := objects[x].(*GridViewItem)
+			card.ImgLoader.Cancel()
+			delete(g.visibleArtwork, card)
 			g.cardPool.Put(objects[x])
 			objects[x] = nil
 		}
@@ -185,7 +192,7 @@ func (g *GroupedReleases) Refresh() {
 
 func (g *GroupedReleases) createNewItemCard() fyne.CanvasObject {
 	card := NewGridViewItem(myTheme.AlbumIcon)
-	card.SetSize(backend.AppInstance().Config.GridView.CardSize)
+	card.SetSize(groupedCardSize())
 	card.ItemIndex = -1
 	card.ImgLoader = util.NewThumbnailLoader(g.imageFetcher, card.Cover.SetImage)
 	card.ImgLoader.OnBeforeLoad = func() { card.Cover.SetImage(nil) }
@@ -266,7 +273,12 @@ func (g *GroupedReleases) doUpdateItemCard(card *GridViewItem, model *GridViewIt
 	}
 
 	card.Update(model)
-	card.ImgLoader.Load(model.CoverArtID)
+	if g.container != nil {
+		card.ImgLoader.Cancel()
+		delete(g.visibleArtwork, card)
+	} else {
+		card.ImgLoader.Load(model.CoverArtID)
+	}
 }
 
 type groupedReleasesHeader struct {
@@ -312,4 +324,87 @@ func (g *groupedReleasesHeader) Tapped(*fyne.PointEvent) {
 	g.Collapsed = !g.Collapsed
 	g.onToggle(g.Collapsed)
 	g.Refresh()
+}
+
+// ReloadImages is an explicit retry, so repeated layout/paint refreshes do not
+// create an unbounded network retry loop after failures.
+func (g *GroupedReleases) ReloadImages() {
+	if g.container != nil {
+		g.CancelImages()
+		g.artworkPaused = false
+		g.updateVisibleArtwork()
+		return
+	}
+	for _, section := range g.sections {
+		for _, object := range section.container.Objects {
+			card := object.(*GridViewItem)
+			card.ImgLoader.Load(card.coverArtID)
+		}
+	}
+}
+
+func (g *GroupedReleases) CancelImages() {
+	g.artworkPaused = true
+	for card := range g.visibleArtwork {
+		card.ImgLoader.Cancel()
+	}
+	g.visibleArtwork = nil
+}
+
+// Cards remain in the layout, but only intersecting rows consume network work.
+func (g *GroupedReleases) updateVisibleArtwork() {
+	if g.container == nil || g.artworkPaused {
+		return
+	}
+	if g.visibleArtwork == nil {
+		g.visibleArtwork = make(map[*GridViewItem]bool)
+	}
+	top, bottom := g.container.Offset.Y, g.container.Offset.Y+g.container.Size().Height
+	visible := make(map[*GridViewItem]bool)
+	for _, section := range g.sections {
+		if section.container == nil || section.container.Hidden {
+			continue
+		}
+		for _, object := range section.container.Objects {
+			card := object.(*GridViewItem)
+			y := section.container.Position().Y + card.Position().Y
+			if bottom > top && y < bottom && y+card.Size().Height > top {
+				visible[card] = true
+			}
+		}
+	}
+	// Release old rows before scheduling the newly visible ones.
+	for card := range g.visibleArtwork {
+		if !visible[card] {
+			card.ImgLoader.Cancel()
+			delete(g.visibleArtwork, card)
+		}
+	}
+	for card := range visible {
+		if !g.visibleArtwork[card] || card.ImgLoader.NeedsReload() {
+			g.visibleArtwork[card] = true
+			card.ImgLoader.Load(card.coverArtID)
+		}
+	}
+}
+
+type groupedArtworkRenderer struct {
+	fyne.WidgetRenderer
+	group *GroupedReleases
+}
+
+func (r *groupedArtworkRenderer) Layout(size fyne.Size) {
+	r.WidgetRenderer.Layout(size)
+	r.group.updateVisibleArtwork()
+}
+func (r *groupedArtworkRenderer) Refresh() {
+	r.WidgetRenderer.Refresh()
+	r.group.updateVisibleArtwork()
+}
+
+func groupedCardSize() float32 {
+	if app := backend.AppInstance(); app != nil {
+		return app.Config.GridView.CardSize
+	}
+	return 200
 }

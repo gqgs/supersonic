@@ -38,6 +38,8 @@ func (a *albumsPageAdapter) SetItemsFunc(f func() []widgets.GridViewItemModel) {
 	a.itemsFn = f
 }
 
+func (a *albumsPageAdapter) SearchPlaceholder() string { return lang.L("Search albums") }
+
 func (a *albumsPageAdapter) Title() string { return lang.L("Albums") }
 
 func (a *albumsPageAdapter) Filter() mediaprovider.AlbumFilter {

@@ -94,18 +94,23 @@ type gridViewArtistIterator struct {
 func (g gridViewArtistIterator) NextN(n int) []GridViewItemModel {
 	artists := g.iter.NextN(n)
 	return sharedutil.MapSlice(artists, func(ar *mediaprovider.Artist) GridViewItemModel {
-		albumsLabel := lang.L("albums")
-		if ar.AlbumCount == 1 {
-			albumsLabel = lang.L("album")
+		var secondary []string
+		// Omitted Subsonic counts decode as zero. Do not present that as a
+		// known catalog total, and never invent a count from a search page.
+		if ar.AlbumCount > 0 {
+			albumsLabel := lang.L("albums")
+			if ar.AlbumCount == 1 {
+				albumsLabel = lang.L("album")
+			}
+			fallback := fmt.Sprintf("%d %s", ar.AlbumCount, albumsLabel)
+			secondary = []string{lang.LocalizePluralKey("{{.albumsCount}} albums",
+				fallback, ar.AlbumCount, map[string]string{"albumsCount": strconv.Itoa(ar.AlbumCount)})}
 		}
-		fallbackAlbumsMsg := fmt.Sprintf("%d %s", ar.AlbumCount, albumsLabel)
-		albumsMsg := lang.LocalizePluralKey("{{.albumsCount}} albums",
-			fallbackAlbumsMsg, ar.AlbumCount, map[string]string{"albumsCount": strconv.Itoa(ar.AlbumCount)})
 		return GridViewItemModel{
 			Name:        ar.Name,
 			ID:          ar.ID,
 			CoverArtID:  ar.CoverArtID,
-			Secondary:   []string{albumsMsg},
+			Secondary:   secondary,
 			CanFavorite: true,
 			IsFavorite:  ar.Favorite,
 		}
@@ -230,6 +235,9 @@ func (g *GridView) Clear() {
 	g.stateMutex.Lock()
 	defer g.stateMutex.Unlock()
 	g.cancelFetch()
+	for _, card := range g.itemForIndex {
+		card.ImgLoader.Cancel()
+	}
 	g.items = nil
 	g.done = true
 }
@@ -237,6 +245,9 @@ func (g *GridView) Clear() {
 func (g *GridView) Reset(iter GridViewIterator) {
 	g.stateMutex.Lock()
 	g.cancelFetch()
+	for _, card := range g.itemForIndex {
+		card.ImgLoader.Cancel()
+	}
 	g.items = nil
 	g.itemForIndex = make(map[int]*GridViewItem)
 	g.done = false
@@ -251,6 +262,9 @@ func (g *GridView) Reset(iter GridViewIterator) {
 func (g *GridView) ResetFromState(state *GridViewState) {
 	g.stateMutex.Lock()
 	g.cancelFetch()
+	for _, card := range g.itemForIndex {
+		card.ImgLoader.Cancel()
+	}
 	g.GridViewState = *state
 	g.itemForIndex = make(map[int]*GridViewItem)
 	g.stateMutex.Unlock()
@@ -261,6 +275,9 @@ func (g *GridView) ResetFromState(state *GridViewState) {
 func (g *GridView) ResetFixed(items []GridViewItemModel) {
 	g.stateMutex.Lock()
 	g.cancelFetch()
+	for _, card := range g.itemForIndex {
+		card.ImgLoader.Cancel()
+	}
 	g.items = items
 	g.itemForIndex = make(map[int]*GridViewItem)
 	g.done = true
@@ -574,3 +591,24 @@ func (g *disabledGridWrap) Disabled() bool { return true }
 func (g *disabledGridWrap) Disable() {}
 
 func (g *disabledGridWrap) Enable() {}
+
+// ReloadImages retries only currently instantiated cards.
+func (g *GridView) ReloadImages() {
+	g.stateMutex.RLock()
+	cards := make([]*GridViewItem, 0, len(g.itemForIndex))
+	for _, card := range g.itemForIndex {
+		cards = append(cards, card)
+	}
+	g.stateMutex.RUnlock()
+	for _, card := range cards {
+		card.ImgLoader.Load(card.coverArtID)
+	}
+}
+
+func (g *GridView) CancelImages() {
+	g.stateMutex.RLock()
+	defer g.stateMutex.RUnlock()
+	for _, card := range g.itemForIndex {
+		card.ImgLoader.Cancel()
+	}
+}

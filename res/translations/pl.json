@@ -376,6 +376,8 @@
     },
     "{{.albumsCount}} albums": {
         "one": "{{.albumsCount}} album",
+        "few": "{{.albumsCount}} albumy",
+        "many": "{{.albumsCount}} albumów",
         "other": "{{.albumsCount}} albumów"
     },
     "{{.trackCount}} tracks": {

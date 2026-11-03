@@ -6,6 +6,7 @@ import (
 	"log"
 
 	"fyne.io/fyne/v2"
+	"github.com/supersonic-app/supersonic/backend/mediaprovider"
 )
 
 // ThumbnailLoader is a utility type that exposes a single API to load
@@ -15,8 +16,11 @@ import (
 // once the image is available.
 // Any subsequent calls to Load will cancel the previous load if not yet completed.
 type ThumbnailLoader struct {
-	prevLoadCancel context.CancelFunc
-	im             ImageFetcher
+	prevLoadCancel  context.CancelFunc
+	im              ImageFetcher
+	request         uint64
+	cacheGeneration uint64
+	invalidated     bool
 
 	OnBeforeLoad func()
 	OnLoaded     func(image.Image)
@@ -33,10 +37,33 @@ func NewThumbnailLoader(im ImageFetcher, onLoaded func(image.Image)) ThumbnailLo
 	return ThumbnailLoader{im: im, OnLoaded: onLoaded}
 }
 
-func (i *ThumbnailLoader) Load(coverID string) {
+// NeedsReload reports explicit cache invalidation, not ordinary paint refreshes.
+func (i *ThumbnailLoader) NeedsReload() bool {
+	return i.invalidated || i.cacheGeneration != i.generation()
+}
+
+func (i *ThumbnailLoader) generation() uint64 {
+	if source, ok := i.im.(interface{ ImageCacheGeneration() uint64 }); ok {
+		return source.ImageCacheGeneration()
+	}
+	return 0
+}
+
+// Cancel stops outstanding work and invalidates callbacks already queued on the UI thread.
+func (i *ThumbnailLoader) Cancel() {
+	i.invalidated = true
+	i.request++
 	if i.prevLoadCancel != nil {
 		i.prevLoadCancel()
+		i.prevLoadCancel = nil
 	}
+}
+
+func (i *ThumbnailLoader) Load(coverID string) {
+	i.Cancel()
+	i.invalidated = false
+	request := i.request
+	i.cacheGeneration = i.generation()
 	if coverID == "" {
 		i.callOnLoaded(nil)
 		return
@@ -50,13 +77,18 @@ func (i *ThumbnailLoader) Load(coverID string) {
 	}
 	i.prevLoadCancel = i.im.GetCoverThumbnailAsync(coverID, func(img image.Image, err error) {
 		fyne.Do(func() {
+			if request != i.request {
+				return
+			}
 			if err != nil {
-				log.Printf("Error loading cover image: %s", err.Error())
+				if !mediaprovider.IsExpectedArtworkError(err) {
+					log.Printf("Error loading cover image: %s", err.Error())
+				}
 				i.callOnLoaded(nil)
 			} else {
 				i.callOnLoaded(img)
 			}
-			if i.prevLoadCancel != nil {
+			if request == i.request && i.prevLoadCancel != nil {
 				i.prevLoadCancel() // Cancel the context to release resources if not already cancelled
 			}
 		})

@@ -159,6 +159,13 @@ func (a *ArtistPage) Route() controller.Route {
 }
 
 func (a *ArtistPage) Reload() {
+	// Retry visible artwork immediately, even if refreshing catalog metadata fails.
+	if a.groupedReleases != nil {
+		a.groupedReleases.ReloadImages()
+	}
+	if a.albumGrid != nil {
+		a.albumGrid.ReloadImages()
+	}
 	a.topTracks = nil
 	a.allTracks = nil
 	go a.load()
@@ -191,6 +198,7 @@ func (a *ArtistPage) Save() SavedPage {
 		s.gridScrollPos = a.groupedReleases.GetScrollOffset()
 		s.sectionVis = a.groupedReleases.GetSectionVisibility()
 		s.sectionVisNeedApply = true
+		a.groupedReleases.CancelImages()
 		a.groupedReleases.Model = widgets.GroupedReleasesModel{}
 		a.pool.Release(util.WidgetTypeGroupedReleases, a.groupedReleases)
 	}
@@ -343,7 +351,11 @@ func (a *ArtistPage) load() {
 		}
 		a.artistInfo = artist
 		a.header.Update(artist, a.im)
-		a.onViewChange(a.activeView)
+		if a.activeView == 0 {
+			a.showAlbumGrid(true)
+		} else {
+			a.onViewChange(a.activeView)
+		}
 	})
 
 	info, err := a.mp.GetArtistInfo(a.artistID)
@@ -364,6 +376,17 @@ func (a *ArtistPage) showAlbumGrid(reSort bool) {
 	a.activeView = 0
 
 	useGroupedReleases := a.useGroupedReleases()
+	// Metadata refresh can change which view is appropriate.
+	if useGroupedReleases && a.groupedReleases == nil && a.albumGrid != nil {
+		a.albumGrid.Clear()
+		a.pool.Release(util.WidgetTypeGridView, a.albumGrid)
+		a.albumGrid = nil
+	} else if !useGroupedReleases && a.albumGrid == nil && a.groupedReleases != nil {
+		a.groupedReleases.CancelImages()
+		a.groupedReleases.Model = widgets.GroupedReleasesModel{}
+		a.pool.Release(util.WidgetTypeGroupedReleases, a.groupedReleases)
+		a.groupedReleases = nil
+	}
 
 	if a.albumGrid == nil && a.groupedReleases == nil {
 		if a.artistInfo == nil {
@@ -546,6 +569,14 @@ func (a *ArtistPage) obtainNewTracklist() *widgets.Tracklist {
 }
 
 func (a *ArtistPage) onViewChange(num int) {
+	if num != 0 {
+		if a.groupedReleases != nil {
+			a.groupedReleases.CancelImages()
+		}
+		if a.albumGrid != nil {
+			a.albumGrid.CancelImages()
+		}
+	}
 	// save current data
 	if a.tracklistCtr != nil {
 		tl := a.tracklistCtr.Objects[0].(*widgets.Tracklist)

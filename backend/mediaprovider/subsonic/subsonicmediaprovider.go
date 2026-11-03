@@ -2,7 +2,6 @@ package subsonic
 
 import (
 	"errors"
-	"image"
 	"io"
 	"math"
 	"net/url"
@@ -25,6 +24,8 @@ const (
 
 type subsonicMediaProvider struct {
 	currentLibraryID string
+	coverCooldownMu  sync.Mutex
+	coverCooldowns   map[coverCooldownKey]coverCooldown
 
 	client          *subsonic.Client
 	prefetchCoverCB func(coverArtID string)
@@ -161,7 +162,7 @@ func (s *subsonicMediaProvider) GetArtist(artistID string) (*mediaprovider.Artis
 		Artist: mediaprovider.Artist{
 			ID:         ar.ID,
 			Name:       ar.Name,
-			CoverArtID: ar.CoverArt,
+			CoverArtID: artistCoverArtID(ar),
 			Favorite:   !ar.Starred.IsZero(),
 			AlbumCount: ar.AlbumCount,
 		},
@@ -189,12 +190,18 @@ func (s *subsonicMediaProvider) GetArtistInfo(artistID string) (*mediaprovider.A
 	}, nil
 }
 
-func (s *subsonicMediaProvider) GetCoverArt(id string, size int) (image.Image, error) {
-	params := map[string]string{}
-	if size > 0 {
-		params["size"] = strconv.Itoa(size)
+// Internal cover ID for a genuine artist image URL supplied by the server.
+const artistImageURLPrefix = "supersonic-artist-image:"
+
+func artistCoverArtID(ar *subsonic.ArtistID3) string {
+	if ar.CoverArt != "" {
+		return ar.CoverArt
 	}
-	return s.client.GetCoverArt(id, params)
+	u, err := url.Parse(ar.ArtistImageUrl)
+	if err == nil && u.Host != "" && (u.Scheme == "http" || u.Scheme == "https") {
+		return artistImageURLPrefix + u.String()
+	}
+	return ""
 }
 
 func (s *subsonicMediaProvider) GetFavorites() (mediaprovider.Favorites, error) {
@@ -760,7 +767,7 @@ func toArtistFromID3(ar *subsonic.ArtistID3) *mediaprovider.Artist {
 	}
 	return &mediaprovider.Artist{
 		ID:         ar.ID,
-		CoverArtID: ar.CoverArt,
+		CoverArtID: artistCoverArtID(ar),
 		Name:       ar.Name,
 		Favorite:   !ar.Starred.IsZero(),
 		AlbumCount: ar.AlbumCount,
