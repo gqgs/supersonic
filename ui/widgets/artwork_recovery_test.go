@@ -1,11 +1,15 @@
 package widgets
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"github.com/supersonic-app/supersonic/backend/mediaprovider"
 	"image"
 	"image/color"
+	"log"
+	"strings"
 	"testing"
 
 	"fyne.io/fyne/v2"
@@ -206,4 +210,35 @@ func TestGroupedArtworkColdScrollIsViewportBounded(t *testing.T) {
 		}
 	}
 	t.Logf("120 releases: cold viewport=%d requests, next viewport=%d, offscreen cancellations=%d", cold, scrolled, cancelled)
+}
+
+func TestExpectedArtworkAbsenceIsQuietButFailuresRemainVisible(t *testing.T) {
+	app := test.NewApp()
+	defer app.Quit()
+	queue := make(chan func(), 10)
+	fyne.SetCurrentApp(&searchTestApp{App: app, driver: &searchTestDriver{Driver: app.Driver(), queue: queue}})
+	fetch := &recoveryFetcher{}
+	var rendered image.Image
+	loader := util.NewThumbnailLoader(fetch, func(img image.Image) { rendered = img })
+	var output bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(previous)
+	for _, err := range []error{mediaprovider.ErrArtworkUnavailable, fmt.Errorf("cooldown: %w", mediaprovider.ErrArtworkPending)} {
+		loader.Load("artist-image:1")
+		fetch.callbacks[len(fetch.callbacks)-1](nil, err)
+		(<-queue)()
+	}
+	if strings.Contains(output.String(), "Error loading cover image") {
+		t.Fatalf("expected state logged as error: %s", output.String())
+	}
+	if rendered != nil {
+		t.Fatal("missing artwork fabricated an image")
+	}
+	loader.Load("artist-image:1")
+	fetch.callbacks[len(fetch.callbacks)-1](nil, errors.New("Subsonic artwork error 40: authentication failed"))
+	(<-queue)()
+	if !strings.Contains(output.String(), "authentication failed") {
+		t.Fatal("real failure hidden")
+	}
 }

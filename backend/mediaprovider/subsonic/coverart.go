@@ -1,6 +1,7 @@
 package subsonic
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"image"
@@ -29,6 +30,12 @@ func (s *subsonicMediaProvider) getCoverArtWithDelays(id string, size int, delay
 	return s.getCoverArtContext(context.Background(), id, size, delays)
 }
 func (s *subsonicMediaProvider) getCoverArtContext(ctx context.Context, id string, size int, delays []time.Duration) (image.Image, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.coverCooldownError(id, size); err != nil {
+		return nil, err
+	}
 	client := *s.client
 	httpClient := *s.client.Client
 	transport := httpClient.Transport
@@ -68,25 +75,15 @@ func (s *subsonicMediaProvider) getCoverArtContext(ctx context.Context, id strin
 		img, retry, err := decodeCoverResponse(resp)
 		resp.Body.Close()
 		if !retry || attempt == len(delays) {
+			s.rememberCoverCooldown(id, size, coverRetryAfter(resp), err)
 			return img, err
 		}
 		delay := delays[attempt]
-		if value := resp.Header.Get("Retry-After"); value != "" {
-			var serverDelay time.Duration
-			if seconds, parseErr := strconv.Atoi(value); parseErr == nil && seconds > 0 {
-				// Bound conversion before multiplying an untrusted header by a duration.
-				if seconds > 3600 {
-					seconds = 3600
-				}
-				serverDelay = time.Duration(seconds) * time.Second
-			} else if date, parseErr := http.ParseTime(value); parseErr == nil {
-				serverDelay = time.Until(date)
-			}
-			if serverDelay > delay {
-				delay = serverDelay
-			}
+		if serverDelay := coverRetryAfter(resp); serverDelay > delay {
+			delay = serverDelay
 		}
 		if delay > waitBudget {
+			s.rememberCoverCooldown(id, size, delay, err)
 			return img, fmt.Errorf("%w (retry after %s)", err, delay)
 		}
 		waitBudget -= delay
@@ -101,14 +98,22 @@ func (s *subsonicMediaProvider) getCoverArtContext(ctx context.Context, id strin
 }
 
 func decodeCoverResponse(resp *http.Response) (image.Image, bool, error) {
+	reader := bufio.NewReader(resp.Body)
+	apiError, parseErr := readCoverAPIError(reader)
+	if parseErr != nil {
+		return nil, false, parseErr
+	}
+	if retry, err := expectedCoverError(resp, apiError); err != nil {
+		return nil, retry, err
+	}
 	if resp.StatusCode != http.StatusOK {
-		retry := resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusGatewayTimeout
+		retry := retryCoverStatus(resp.StatusCode)
 		return nil, retry, fmt.Errorf("cover image returned HTTP %d", resp.StatusCode)
 	}
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 	// Some servers mislabel binary artwork. Let the decoder inspect the bytes,
 	// just as the original client did, before classifying an error response.
-	img, _, err := image.Decode(resp.Body)
+	img, _, err := image.Decode(reader)
 	if err != nil {
 		if strings.Contains(contentType, "json") || strings.Contains(contentType, "xml") || strings.HasPrefix(contentType, "text/") {
 			return nil, false, fmt.Errorf("cover image returned non-image content type %q: %w", contentType, err)
@@ -159,5 +164,5 @@ func (b *coverResponseBody) Close() error { defer b.cleanup(); return b.ReadClos
 // These namespaces identify expensive artist-card resolution in the companion
 // bridge, or a direct artist image URL. Ordinary server cover IDs stay unclassified.
 func (s *subsonicMediaProvider) IsArtistCoverArt(id string) bool {
-	return strings.HasPrefix(id, "artist-image:") || strings.HasPrefix(id, artistImageURLPrefix)
+	return strings.HasPrefix(id, "artist-image:") || strings.HasPrefix(id, "artist-release:") || strings.HasPrefix(id, artistImageURLPrefix)
 }

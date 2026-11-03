@@ -24,6 +24,8 @@ const (
 
 type subsonicMediaProvider struct {
 	currentLibraryID string
+	coverCooldownMu  sync.Mutex
+	coverCooldowns   map[coverCooldownKey]coverCooldown
 
 	client          *subsonic.Client
 	prefetchCoverCB func(coverArtID string)

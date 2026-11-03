@@ -6,6 +6,7 @@ import (
 	"log"
 
 	"fyne.io/fyne/v2"
+	"github.com/supersonic-app/supersonic/backend/mediaprovider"
 )
 
 // ThumbnailLoader is a utility type that exposes a single API to load
@@ -80,7 +81,9 @@ func (i *ThumbnailLoader) Load(coverID string) {
 				return
 			}
 			if err != nil {
-				log.Printf("Error loading cover image: %s", err.Error())
+				if !mediaprovider.IsExpectedArtworkError(err) {
+					log.Printf("Error loading cover image: %s", err.Error())
+				}
 				i.callOnLoaded(nil)
 			} else {
 				i.callOnLoaded(img)
