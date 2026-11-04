@@ -18,6 +18,10 @@ import (
 // Error returned by many Player functions if called before the player has not been initialized.
 var ErrUnitialized error = errors.New("mpv player uninitialized")
 
+// ErrMediaInfoUnavailable means mpv has no decoded audio information yet, for
+// example while a file is loading or after playback stops. Callers may retry.
+var ErrMediaInfoUnavailable = errors.New("mpv media information unavailable")
+
 // Information about a specific audio device.
 // Returned by ListAudioDevices.
 type AudioDevice struct {
@@ -451,6 +455,9 @@ func (p *Player) GetMediaInfo() (MediaInfo, error) {
 	}
 	n, err := p.mpv.GetProperty("audio-params", mpv.FORMAT_NODE)
 	if err != nil {
+		if errors.Is(err, mpv.ERROR_PROPERTY_UNAVAILABLE) {
+			return MediaInfo{}, fmt.Errorf("%w: %w", ErrMediaInfoUnavailable, err)
+		}
 		return info, err
 	}
 	nodeMap := n.(*mpv.Node).Data.(map[string]*mpv.Node)
