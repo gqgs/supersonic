@@ -121,7 +121,7 @@ func (s *subsonicMediaProvider) coverCooldownError(id string, size int) error {
 	key := coverCooldownKey{id, size}
 	entry := s.coverCooldowns[key]
 	if time.Now().Before(entry.until) {
-		return entry.err
+		return &mediaprovider.ArtworkRetryError{Err: entry.err, RetryAt: entry.until}
 	}
 	delete(s.coverCooldowns, key)
 	return nil

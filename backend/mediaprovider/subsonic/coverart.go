@@ -76,6 +76,11 @@ func (s *subsonicMediaProvider) getCoverArtContext(ctx context.Context, id strin
 		resp.Body.Close()
 		if !retry || attempt == len(delays) {
 			s.rememberCoverCooldown(id, size, coverRetryAfter(resp), err)
+			if err != nil {
+				if cooldown := s.coverCooldownError(id, size); cooldown != nil {
+					return img, cooldown
+				}
+			}
 			return img, err
 		}
 		delay := delays[attempt]
@@ -84,6 +89,11 @@ func (s *subsonicMediaProvider) getCoverArtContext(ctx context.Context, id strin
 		}
 		if delay > waitBudget {
 			s.rememberCoverCooldown(id, size, delay, err)
+			if err != nil {
+				if cooldown := s.coverCooldownError(id, size); cooldown != nil {
+					return img, cooldown
+				}
+			}
 			return img, fmt.Errorf("%w (retry after %s)", err, delay)
 		}
 		waitBudget -= delay

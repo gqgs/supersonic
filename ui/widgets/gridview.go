@@ -326,6 +326,16 @@ func (g *GridView) createNewItemCard() fyne.CanvasObject {
 	card.SetSize(backend.AppInstance().Config.GridView.CardSize)
 	card.ItemIndex = -1
 	card.ImgLoader = util.NewThumbnailLoader(g.imageFetcher, card.Cover.SetImage)
+	card.ImgLoader.CanRetry = func() bool {
+		columns := g.grid.ColumnCount()
+		rowHeight := card.Size().Height + theme.Padding()
+		if columns <= 0 || rowHeight <= 0 || !g.Visible() {
+			return false
+		}
+		top := float32(card.ItemIndex/columns) * rowHeight
+		offset := g.grid.GetScrollOffset()
+		return top+rowHeight > offset && top < offset+g.grid.Size().Height
+	}
 	card.ImgLoader.OnBeforeLoad = func() { card.Cover.SetImage(nil) }
 	card.OnPlay = func() { g.onPlay(card.ItemID(), false) }
 	card.OnFavorite = func(fav bool) {
