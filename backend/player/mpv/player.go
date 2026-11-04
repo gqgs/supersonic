@@ -36,6 +36,10 @@ type MediaInfo struct {
 	// NOTE: this is the format that the decoder outputs, NOT necessarily the format of the file.
 	Format string
 
+	// Format actually written to the audio API; empty if not available.
+	OutputFormat     string
+	OutputSamplerate int
+
 	// Audio samplerate.
 	Samplerate int
 
@@ -56,21 +60,22 @@ var _ player.URLPlayer = (*Player)(nil)
 type Player struct {
 	player.BasePlayerCallbackImpl
 
-	mpv            *mpv.Mpv
-	initialized    bool
-	vol            int
-	replayGainOpts player.ReplayGainOptions
-	haveRGainOpts  bool
-	audioExclusive bool
-	status         player.Status
-	seeking        bool
-	curPlaylistPos int64
-	lenPlaylist    int64
-	prePausedState player.State
-	clientName     string
-	equalizer      Equalizer
-	peaksEnabled   bool
-	pauseFade      bool
+	mpv             *mpv.Mpv
+	initialized     bool
+	vol             int
+	replayGainOpts  player.ReplayGainOptions
+	haveRGainOpts   bool
+	audioExclusive  bool
+	eac3Passthrough bool
+	status          player.Status
+	seeking         bool
+	curPlaylistPos  int64
+	lenPlaylist     int64
+	prePausedState  player.State
+	clientName      string
+	equalizer       Equalizer
+	peaksEnabled    bool
+	pauseFade       bool
 
 	icyTitleCb func(string)
 
@@ -111,6 +116,11 @@ func (p *Player) Init(maxCacheMB int) error {
 		m.SetOptionString("prefetch-playlist", "yes")
 		m.SetOptionString("force-seekable", "yes")
 		m.SetOptionString("terminal", "no")
+
+		if err := configurePassthrough(m, p.eac3Passthrough); err != nil {
+			m.TerminateDestroy()
+			return err
+		}
 
 		// limit in-memory cache size
 		maxBackMB := maxCacheMB / 3
@@ -257,6 +267,10 @@ func (p *Player) SetReplayGainOptions(options player.ReplayGainOptions) error {
 		mode = "track"
 	}
 
+	if p.eac3Passthrough {
+		mode = "no"
+		options.PreampGain = 0
+	}
 	if p.initialized {
 		if err := p.mpv.SetPropertyString("replaygain", mode); err != nil {
 			return err
@@ -319,7 +333,7 @@ func (p *Player) Pause() error {
 		return nil
 	}
 
-	if p.pauseFade {
+	if p.pauseFade && !p.eac3Passthrough {
 		p.prePausedState = p.status.State
 		p.setState(player.Paused)
 
@@ -425,6 +439,16 @@ func (p *Player) Equalizer() Equalizer {
 
 func (p *Player) GetMediaInfo() (MediaInfo, error) {
 	var info MediaInfo
+	if !p.initialized {
+		return info, ErrUnitialized
+	}
+	if output, err := p.mpv.GetProperty("audio-out-params/format", mpv.FORMAT_STRING); err == nil {
+		info.OutputFormat, _ = output.(string)
+	}
+	if rate, err := p.mpv.GetProperty("audio-out-params/samplerate", mpv.FORMAT_INT64); err == nil {
+		value, _ := rate.(int64)
+		info.OutputSamplerate = int(value)
+	}
 	n, err := p.mpv.GetProperty("audio-params", mpv.FORMAT_NODE)
 	if err != nil {
 		return info, err
@@ -494,7 +518,7 @@ func (p *Player) SetPeaksEnabled(enabled bool) error {
 
 func (p *Player) GetPeaks() (float64, float64, float64, float64) {
 	nInf := math.Inf(-1)
-	if p.status.State != player.Playing {
+	if p.eac3Passthrough || p.status.State != player.Playing {
 		return nInf, nInf, nInf, nInf
 	}
 	lPeak, rPeak, lRMS, rRMS, err := p.getPeaks()
@@ -518,6 +542,9 @@ func (p *Player) setState(s player.State) {
 }
 
 func (p *Player) setAF() error {
+	if p.eac3Passthrough {
+		return p.mpv.SetPropertyString("af", "")
+	}
 	var filters []string
 	if p.peaksEnabled {
 		filters = append(filters, "@astats:astats=metadata=1:reset=1:measure_overall=none")

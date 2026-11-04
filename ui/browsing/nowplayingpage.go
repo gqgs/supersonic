@@ -631,5 +631,9 @@ func (a *NowPlayingPage) formatMediaInfoStr(player player.BasePlayer) string {
 
 	// Note: bit depth intentionally omitted since MPV reports the decoded bit depth
 	// i.e. 24 bit files get reported as 32 bit. Also b/c bit depth isn't meaningful for lossy.
-	return fmt.Sprintf("%s %g kHz, %d kbps", codec, float64(audioInfo.Samplerate)/1000, audioInfo.Bitrate/1000)
+	output := audioInfo.OutputDescription()
+	if audioInfo.OutputSamplerate > 0 {
+		output += fmt.Sprintf(" %g kHz", float64(audioInfo.OutputSamplerate)/1000)
+	}
+	return fmt.Sprintf("%s: %s, %d kbps • %s: %s", lang.L("Source"), codec, audioInfo.Bitrate/1000, lang.L("Output"), output)
 }

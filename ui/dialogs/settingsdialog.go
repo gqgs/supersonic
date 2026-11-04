@@ -373,6 +373,13 @@ func (s *SettingsDialog) createPlaybackTab(isLocalPlayer, isReplayGainPlayer boo
 		}
 	}
 
+	passthrough := widget.NewCheck(lang.L("E-AC-3 passthrough (restart required)"), func(enabled bool) {
+		s.config.LocalPlayback.EAC3Passthrough = enabled
+	})
+	passthrough.Checked = s.config.LocalPlayback.EAC3Passthrough
+	passthroughNote := widget.NewLabel(lang.L("Requires a compatible HDMI device and receiver. Use the receiver volume. While enabled, EQ, ReplayGain, visualizers and pause fading are bypassed, including for PCM. Saved settings are retained. If playback fails, disable this option and restart."))
+	passthroughNote.Wrapping = fyne.TextWrapWord
+
 	rGainOpts := []string{lang.L("None"), lang.L("Album"), lang.L("Track"), lang.L("Auto")}
 	replayGainSelect := widget.NewSelect(rGainOpts, nil)
 	replayGainSelect.OnChanged = func(_ string) {
@@ -443,6 +450,7 @@ func (s *SettingsDialog) createPlaybackTab(isLocalPlayer, isReplayGainPlayer boo
 
 	if !isLocalPlayer {
 		deviceSelect.Disable()
+		passthrough.Disable()
 		audioExclusive.Disable()
 		pauseFade.Disable()
 	}
@@ -459,6 +467,7 @@ func (s *SettingsDialog) createPlaybackTab(isLocalPlayer, isReplayGainPlayer boo
 				widget.NewLabel(lang.L("Audio device")), container.NewBorder(nil, nil, nil, util.NewHSpace(70), deviceSelect),
 				layout.NewSpacer(), audioExclusive,
 			)),
+		passthrough, passthroughNote,
 		pauseFade,
 		s.newSectionSeparator(),
 		disableTranscode,
