@@ -281,7 +281,8 @@ func NewAlbumPageHeader(page *AlbumPage) *AlbumPageHeader {
 	}
 	a.miscLabel = widget.NewLabel("")
 	a.qualityLabel = widget.NewLabel("")
-	a.qualityLabel.Importance = widget.LowImportance
+	a.qualityLabel.Importance = widget.MediumImportance
+	a.qualityLabel.TextStyle.Bold = true
 	a.qualityLabel.Truncation = fyne.TextTruncateEllipsis
 	a.qualityLabel.Hide()
 	playButton := widget.NewButtonWithIcon(lang.L("Play"), theme.MediaPlayIcon(), func() {

@@ -6,6 +6,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/test"
+	"fyne.io/fyne/v2/widget"
 	"github.com/supersonic-app/supersonic/backend/mediaprovider"
 )
 
@@ -42,6 +43,9 @@ func TestAlbumQualityVisibilityAndReuse(t *testing.T) {
 	app := test.NewApp()
 	defer app.Quit()
 	p := qualityTestPage()
+	if p.header.qualityLabel.Importance != widget.MediumImportance || !p.header.qualityLabel.TextStyle.Bold {
+		t.Fatal("catalog availability must use readable foreground text with bold weight")
+	}
 	p.applyAudioQuality(1, 0, "album", []string{"dolby-atmos", "lossless"})
 	if p.header.qualityLabel.Text != "Available: Dolby Atmos · Lossless" || !p.header.qualityLabel.Visible() {
 		t.Fatal("expected visible catalog availability")
