@@ -185,7 +185,7 @@ func NewNowPlayingPage(
 		a.contr.ShowTrackInfoDialog(track)
 	}
 	a.lyricsViewer = widgets.NewLyricsViewer(a.onSeekToLyricLine)
-	a.statusLabel = widget.NewLabel(lang.L("Stopped"))
+	a.statusLabel = newNowPlayingStatusLabel()
 
 	a.Reload()
 	return a
@@ -636,4 +636,10 @@ func (a *NowPlayingPage) formatMediaInfoStr(player player.BasePlayer) string {
 		output += fmt.Sprintf(" %g kHz", float64(audioInfo.OutputSamplerate)/1000)
 	}
 	return fmt.Sprintf("%s: %s, %d kbps • %s: %s", lang.L("Source"), codec, audioInfo.Bitrate/1000, lang.L("Output"), output)
+}
+
+func newNowPlayingStatusLabel() *widget.Label {
+	label := widget.NewLabel(lang.L("Stopped"))
+	label.Wrapping = fyne.TextWrapWord
+	return label
 }

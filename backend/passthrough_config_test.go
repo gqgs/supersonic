@@ -18,9 +18,17 @@ func TestPassthroughConfigDefaultsAndPersistence(t *testing.T) {
 	if c.LocalPlayback.EAC3Passthrough {
 		t.Fatal("legacy config enabled passthrough")
 	}
+	if c.LocalPlayback.AudioDeviceName != "alsa/hdmi:CARD=HDMI,DEV=3" {
+		t.Fatal("legacy device not decoded")
+	}
 	c.LocalPlayback.EAC3Passthrough = true
 	c.LocalPlayback.EqualizerEnabled = true
 	c.LocalPlayback.Volume = 37
+	c.LocalPlayback.EqualizerPreamp = -3
+	c.LocalPlayback.GraphicEqualizerBands[0] = 4
+	c.ReplayGain.Mode = ReplayGainTrack
+	c.ReplayGain.PreampGainDB = 6
+	c.ReplayGain.PreventClipping = true
 	if err := c.WriteConfigFile(path); err != nil {
 		t.Fatal(err)
 	}
@@ -30,5 +38,8 @@ func TestPassthroughConfigDefaultsAndPersistence(t *testing.T) {
 	}
 	if !loaded.LocalPlayback.EAC3Passthrough || loaded.LocalPlayback.AudioDeviceName != c.LocalPlayback.AudioDeviceName || !loaded.LocalPlayback.EqualizerEnabled || loaded.LocalPlayback.Volume != 37 {
 		t.Fatal("settings not preserved")
+	}
+	if loaded.LocalPlayback.EqualizerPreamp != -3 || loaded.LocalPlayback.GraphicEqualizerBands[0] != 4 || loaded.ReplayGain != c.ReplayGain {
+		t.Fatal("processing settings erased")
 	}
 }

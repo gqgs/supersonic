@@ -60,6 +60,9 @@ func TestPassthroughNativeConfiguration(t *testing.T) {
 			if err := p.SetReplayGainOptions(player.ReplayGainOptions{Mode: player.ReplayGainTrack, PreampGain: 6}); err != nil {
 				t.Fatal(err)
 			}
+			if p.replayGainOpts.Mode != player.ReplayGainTrack || p.replayGainOpts.PreampGain != 6 {
+				t.Fatal("saved ReplayGain overwritten")
+			}
 			wantRG := "track"
 			if enabled {
 				wantRG = "no"
@@ -197,6 +200,15 @@ func TestEAC3PlaybackAndPCMFallback(t *testing.T) {
 			}
 			if info.OutputFormat != format {
 				t.Fatal("reported output differs from API")
+			}
+			if !strings.HasPrefix(format, "spdif-") {
+				if err := p.SetVolume(64); err != nil {
+					t.Fatal(err)
+				}
+				volume, err := m.GetProperty("volume", api.FORMAT_DOUBLE)
+				if err != nil || volume != float64(64) {
+					t.Fatalf("PCM volume did not reach libmpv: %v %v", volume, err)
+				}
 			}
 			t.Logf("source=%s output=%s rate=%d", info.Codec, info.OutputFormat, info.OutputSamplerate)
 		})
