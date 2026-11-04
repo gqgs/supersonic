@@ -2,8 +2,10 @@ package util
 
 import (
 	"context"
+	"errors"
 	"image"
 	"log"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"github.com/supersonic-app/supersonic/backend/mediaprovider"
@@ -21,7 +23,10 @@ type ThumbnailLoader struct {
 	request         uint64
 	cacheGeneration uint64
 	invalidated     bool
+	retryTimer      *time.Timer
 
+	// CanRetry optionally limits deferred requests to cards still in the viewport.
+	CanRetry     func() bool
 	OnBeforeLoad func()
 	OnLoaded     func(image.Image)
 }
@@ -51,6 +56,10 @@ func (i *ThumbnailLoader) generation() uint64 {
 
 // Cancel stops outstanding work and invalidates callbacks already queued on the UI thread.
 func (i *ThumbnailLoader) Cancel() {
+	if i.retryTimer != nil {
+		i.retryTimer.Stop()
+		i.retryTimer = nil
+	}
 	i.invalidated = true
 	i.request++
 	if i.prevLoadCancel != nil {
@@ -60,6 +69,10 @@ func (i *ThumbnailLoader) Cancel() {
 }
 
 func (i *ThumbnailLoader) Load(coverID string) {
+	i.load(coverID, 3)
+}
+
+func (i *ThumbnailLoader) load(coverID string, retries int) {
 	i.Cancel()
 	i.invalidated = false
 	request := i.request
@@ -85,6 +98,28 @@ func (i *ThumbnailLoader) Load(coverID string) {
 					log.Printf("Error loading cover image: %s", err.Error())
 				}
 				i.callOnLoaded(nil)
+				var cooldown *mediaprovider.ArtworkRetryError
+				// Retry only pending artwork, never known missing art or generic failures.
+				// Three deferred attempts bound work for a stationary card.
+				if request == i.request && retries > 0 && errors.Is(err, mediaprovider.ErrArtworkPending) && errors.As(err, &cooldown) {
+					delay := time.Until(cooldown.RetryAt)
+					if delay < time.Second {
+						delay = time.Second
+					}
+					if delay <= 5*time.Minute {
+						i.retryTimer = time.AfterFunc(delay, func() {
+							fyne.Do(func() {
+								if request == i.request {
+									if i.CanRetry != nil && !i.CanRetry() {
+										i.invalidated = true
+										return
+									}
+									i.load(coverID, retries-1)
+								}
+							})
+						})
+					}
+				}
 			} else {
 				i.callOnLoaded(img)
 			}

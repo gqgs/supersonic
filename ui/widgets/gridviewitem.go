@@ -616,3 +616,9 @@ func (g *GridViewItem) MouseIn(e *desktop.MouseEvent) {}
 func (g *GridViewItem) MouseOut() {}
 
 func (g *GridViewItem) MouseMoved(e *desktop.MouseEvent) {}
+
+// Hidden/recycled cards must not keep retrying artwork in the background.
+func (g *GridViewItem) Hide() {
+	g.ImgLoader.Cancel()
+	g.BaseWidget.Hide()
+}

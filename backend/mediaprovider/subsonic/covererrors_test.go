@@ -2,6 +2,7 @@ package subsonic
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -71,6 +72,10 @@ func TestArtworkCooldownSuppressesRepeatRequestsAndExpires(t *testing.T) {
 		_, err := p.GetCoverArtContext(context.Background(), "artist-image:1", 300)
 		if !mediaprovider.IsExpectedArtworkError(err) {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		var retry *mediaprovider.ArtworkRetryError
+		if !errors.As(err, &retry) || time.Until(retry.RetryAt) < 49*time.Second {
+			t.Fatalf("lost retry deadline: %v", err)
 		}
 	}
 	if calls != 1 {

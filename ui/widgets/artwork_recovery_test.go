@@ -11,6 +11,7 @@ import (
 	"log"
 	"strings"
 	"testing"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -241,4 +242,78 @@ func TestExpectedArtworkAbsenceIsQuietButFailuresRemainVisible(t *testing.T) {
 	if !strings.Contains(output.String(), "authentication failed") {
 		t.Fatal("real failure hidden")
 	}
+}
+
+func TestVisibleArtworkRetriesAfterCooldownAndCancels(t *testing.T) {
+	app := test.NewApp()
+	defer app.Quit()
+	queue := make(chan func(), 100)
+	fyne.SetCurrentApp(&searchTestApp{App: app, driver: &searchTestDriver{Driver: app.Driver(), queue: queue}})
+	fetch := &recoveryFetcher{}
+	card := NewGridViewItem(myTheme.AlbumIcon)
+	card.ImgLoader = util.NewThumbnailLoader(fetch, card.Cover.SetImage)
+	drain := func() {
+		t.Helper()
+		select {
+		case fn := <-queue:
+			fn()
+		case <-time.After(2 * time.Second):
+			t.Fatal("callback did not arrive")
+		}
+	}
+	pending := func() error {
+		return &mediaprovider.ArtworkRetryError{Err: mediaprovider.ErrArtworkPending, RetryAt: time.Now().Add(time.Second)}
+	}
+	card.ImgLoader.Load("artist-release:1")
+	fetch.callbacks[0](nil, pending())
+	drain()
+	if len(fetch.ids) != 1 {
+		t.Fatal("retry before cooldown")
+	}
+	drain()
+	if len(fetch.ids) != 2 {
+		t.Fatal("visible card did not retry")
+	}
+	art := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	fetch.callbacks[1](art, nil)
+	drain()
+	if !card.Cover.Im.HaveImage() {
+		t.Fatal("retry did not replace placeholder")
+	}
+	card.ImgLoader.Load("artist-release:2")
+	fetch.callbacks[2](nil, pending())
+	drain()
+	// Let the timer queue its callback, then hide before executing it.
+	time.Sleep(1100 * time.Millisecond)
+	card.Hide()
+	drain()
+	if len(fetch.ids) != 3 {
+		t.Fatal("hidden card retried")
+	}
+	card.Show()
+	card.ImgLoader.Load("artist-release:3")
+	for n := 0; n < 4; n++ {
+		fetch.callbacks[len(fetch.callbacks)-1](nil, pending())
+		drain()
+		if n < 3 {
+			drain()
+		}
+	}
+	select {
+	case <-queue:
+		t.Fatal("unbounded retries")
+	case <-time.After(1100 * time.Millisecond):
+	}
+	if len(fetch.ids) != 7 {
+		t.Fatalf("expected 3 deferred retries, got %d total requests", len(fetch.ids))
+	}
+	card.ImgLoader.CanRetry = func() bool { return false }
+	card.ImgLoader.Load("artist-release:offscreen")
+	fetch.callbacks[7](nil, pending())
+	drain()
+	drain()
+	if len(fetch.ids) != 8 || !card.ImgLoader.NeedsReload() {
+		t.Fatal("offscreen retry must defer until card returns")
+	}
+	card.ImgLoader.Cancel()
 }
