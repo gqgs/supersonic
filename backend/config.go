@@ -133,10 +133,11 @@ type PlaybackConfig struct {
 type LocalPlaybackConfig struct {
 	AudioDeviceName       string
 	AudioExclusive        bool
+	EAC3Passthrough       bool // Restart required; false preserves PCM playback.
 	InMemoryCacheSizeMB   int
 	Volume                int
 	EqualizerEnabled      bool
-	EqualizerType         string    // "ISO10Band" or "ISO15Band"
+	EqualizerType         string // "ISO10Band" or "ISO15Band"
 	EqualizerPreamp       float64
 	GraphicEqualizerBands []float64
 	ActiveEQPresetName    string // Name of currently selected EQ preset

@@ -369,6 +369,9 @@ func (a *App) callOnExit() error {
 func (a *App) initMPV() error {
 	p := mpv.NewWithClientName(a.appName)
 	c := a.Config.LocalPlayback
+	if err := p.SetEAC3Passthrough(c.EAC3Passthrough); err != nil {
+		return err
+	}
 	c.InMemoryCacheSizeMB = clamp(c.InMemoryCacheSizeMB, 10, 500)
 	if err := p.Init(c.InMemoryCacheSizeMB); err != nil {
 		return fmt.Errorf("failed to initialize mpv player: %s", err.Error())
