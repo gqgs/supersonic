@@ -2,6 +2,7 @@ package browsing
 
 import (
 	"fmt"
+	"image"
 	"log"
 	"strconv"
 	"strings"
@@ -202,6 +203,7 @@ func (a *AlbumPage) load() {
 }
 
 type AlbumPageHeader struct {
+	artworkLoader *util.ThumbnailLoader
 	widget.BaseWidget
 
 	Compact bool
@@ -355,19 +357,20 @@ func (a *AlbumPageHeader) Update(album *mediaprovider.AlbumWithTracks, im *backe
 	a.toggleFavButton.IsFavorited = album.Favorite
 	a.Refresh()
 
-	go func() {
-		if cover, err := im.GetCoverThumbnail(album.CoverArtID); err == nil {
-			fyne.Do(func() {
-				a.cover.SetImage(cover, true)
-				a.cover.Refresh()
-			})
-		} else {
-			log.Printf("error fetching cover: %v", err)
-		}
-	}()
+	if a.artworkLoader != nil {
+		a.artworkLoader.Cancel()
+	}
+	loader := util.NewThumbnailLoader(im, func(img image.Image) { a.cover.SetImage(img, true) })
+	loader.RequestSize = func() int { return util.ArtworkSize(a.cover) }
+	a.artworkLoader = &loader
+	loader.Load(a.coverID)
+
 }
 
 func (a *AlbumPageHeader) Clear() {
+	if a.artworkLoader != nil {
+		a.artworkLoader.Cancel()
+	}
 	a.albumID = ""
 	a.coverID = ""
 	a.titleLabel.Segments[0].(*widget.TextSegment).Text = ""
@@ -453,4 +456,13 @@ func formatMiscLabelStr(a *mediaprovider.AlbumWithTracks) string {
 
 func (s *albumPageState) Restore() Page {
 	return newAlbumPage(s.albumID, s.cfg, s.pool, s.pm, s.mp, s.im, s.contr, s.sort, s.scroll)
+}
+
+// Re-evaluate once layout attaches the header to a canvas, so initial requests
+// made before layout can upgrade for HiDPI and expanded headers.
+func (a *AlbumPageHeader) Resize(size fyne.Size) {
+	a.BaseWidget.Resize(size)
+	if a.artworkLoader != nil && a.coverID != "" && a.artworkLoader.NeedsReload() {
+		a.artworkLoader.Load(a.coverID)
+	}
 }

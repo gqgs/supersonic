@@ -38,6 +38,7 @@ type LargeNowPlayingCard struct {
 	OnAlbumNameTapped  func()
 	OnRadioURLTapped   func(url string)
 	OnSetRating        func(rating int)
+	OnCoverResize      func()
 	OnSetFavorite      func(favorite bool)
 }
 
@@ -177,4 +178,16 @@ func (n *LargeNowPlayingCard) Refresh() {
 		n.albumName.Suffix = ""
 	}
 	n.BaseWidget.Refresh()
+}
+
+// Resize notifies the owner after the cover has its actual allocated dimensions.
+func (n *LargeNowPlayingCard) Resize(size fyne.Size) {
+	n.CaptionedImage.Resize(size)
+	if n.OnCoverResize != nil {
+		n.OnCoverResize()
+	}
+}
+
+func (n *LargeNowPlayingCard) CoverArtRequestSize() int {
+	return util.ArtworkSize(n.cover)
 }

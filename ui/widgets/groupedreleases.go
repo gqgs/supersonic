@@ -195,6 +195,7 @@ func (g *GroupedReleases) createNewItemCard() fyne.CanvasObject {
 	card.SetSize(groupedCardSize())
 	card.ItemIndex = -1
 	card.ImgLoader = util.NewThumbnailLoader(g.imageFetcher, card.Cover.SetImage)
+	card.ImgLoader.RequestSize = func() int { return util.ArtworkSize(card.Cover.Im) }
 	card.ImgLoader.OnBeforeLoad = func() { card.Cover.SetImage(nil) }
 	card.OnPlay = func() { g.onPlay(card.ItemID(), false) }
 	card.OnFavorite = func(fav bool) {

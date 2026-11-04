@@ -68,6 +68,7 @@ func NewImageManager(ctx context.Context, s *ServerManager, baseCacheDir string)
 		thumbnailCache: ImageCache{
 			MinSize:    24,
 			MaxSize:    150,
+			MaxBytes:   64 * 1024 * 1024,
 			DefaultTTL: 1 * time.Minute,
 		},
 		maxOnDiskCacheSizeBytes: defaultDiskCacheSizeBytes,
@@ -248,14 +249,30 @@ func (i *ImageManager) fetchRemoteArtistImage(url string) (image.Image, error) {
 	return nil, err
 }
 
-func (i *ImageManager) fetchAndCacheCoverFromDiskOrServer(ctx context.Context, coverID string, ttl time.Duration, cb func(image.Image, error)) (image.Image, error) {
+func (i *ImageManager) fetchAndCacheCoverFromDiskOrServer(ctx context.Context, coverID string, ttl time.Duration, cb func(image.Image, error), sizes ...int) (image.Image, error) {
+	size := coverArtThumbnailSize
+	if len(sizes) > 0 {
+		size = sizes[0]
+	}
+	generation := i.ImageCacheGeneration()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// on disc cache
 	if i.ensureCoverCacheDir() != "" {
-		path := i.filePathForCover(coverID)
+		path := i.filePathForCover(coverID, size)
 		if s, err := os.Stat(path); err == nil {
-			go i.checkRefreshLocalCover(s, coverID, ttl)
+			go i.checkRefreshLocalCover(s, coverID, ttl, size)
 			if img, ok := i.loadLocalImage(path); ok {
-				i.thumbnailCache.SetWithTTL(coverID, img, ttl)
+				i.coverFlightsMu.Lock()
+				valid := ctx.Err() == nil && generation == i.ImageCacheGeneration()
+				if valid {
+					i.thumbnailCache.SetWithTTL(coverCacheKey(coverID, size), img, ttl)
+				}
+				i.coverFlightsMu.Unlock()
+				if !valid {
+					return nil, context.Canceled
+				}
 				if ctx.Err() == nil && cb != nil {
 					cb(img, nil)
 				}
@@ -265,18 +282,28 @@ func (i *ImageManager) fetchAndCacheCoverFromDiskOrServer(ctx context.Context, c
 	}
 
 	// fetch from server
-	return i.fetchAndCacheCoverFromServer(ctx, coverID, ttl, cb)
+	return i.fetchAndCacheCoverFromServer(ctx, coverID, ttl, cb, size)
 }
 
-func (i *ImageManager) fetchAndCacheCoverFromServer(ctx context.Context, coverID string, ttl time.Duration, cb func(image.Image, error)) (image.Image, error) {
-	img, err := i.sharedCover(ctx, coverID, func(shared context.Context) (image.Image, error) { return i.fetchCoverFromServer(shared, coverID, ttl) })
+func (i *ImageManager) fetchAndCacheCoverFromServer(ctx context.Context, coverID string, ttl time.Duration, cb func(image.Image, error), sizes ...int) (image.Image, error) {
+	size := coverArtThumbnailSize
+	if len(sizes) > 0 {
+		size = sizes[0]
+	}
+	img, err := i.sharedSizedCover(ctx, coverID, size, func(shared context.Context) (image.Image, error) {
+		return i.fetchCoverFromServer(shared, coverID, ttl, size)
+	})
 	if ctx.Err() == nil && cb != nil {
 		cb(img, err)
 	}
 	return img, err
 }
 
-func (i *ImageManager) fetchCoverFromServer(ctx context.Context, coverID string, ttl time.Duration) (image.Image, error) {
+func (i *ImageManager) fetchCoverFromServer(ctx context.Context, coverID string, ttl time.Duration, sizes ...int) (image.Image, error) {
+	size := coverArtThumbnailSize
+	if len(sizes) > 0 {
+		size = sizes[0]
+	}
 	generation := i.ImageCacheGeneration()
 	if i.s.Server == nil {
 		err := errors.New("logged out")
@@ -299,20 +326,24 @@ func (i *ImageManager) fetchCoverFromServer(ctx context.Context, coverID string,
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if img, ok := i.GetCoverThumbnailFromCache(coverID); ok {
+		if img, ok := i.GetCoverArtSizedFromCache(coverID, size); ok {
 			return img, nil
 		}
 		server := i.s.Server
 		if server == nil {
 			return nil, errors.New("logged out")
 		}
-		img, err := fetchCoverWithContext(ctx, server, coverID, coverArtThumbnailSize)
+		img, err := fetchCoverWithContext(ctx, server, coverID, size)
 		i.coverFlightsMu.Lock()
 		if err == nil && ctx.Err() == nil && generation == i.ImageCacheGeneration() && imageIsCacheable(img) {
 			if i.ensureCoverCacheDir() != "" {
-				_ = i.writeJpeg(img, i.filePathForCover(coverID))
+				var options *jpeg.Options
+				if size > coverArtThumbnailSize {
+					options = &jpeg.Options{Quality: 95}
+				}
+				_ = i.writeJpegWithOptions(img, i.filePathForCover(coverID, size), options)
 			}
-			i.thumbnailCache.SetWithTTL(coverID, img, ttl)
+			i.thumbnailCache.SetWithTTL(coverCacheKey(coverID, size), img, ttl)
 		}
 		i.coverFlightsMu.Unlock()
 		return img, err
@@ -353,13 +384,28 @@ func (i *ImageManager) getFullSizeCoverArtFromServer(ctx context.Context, coverI
 	}
 }
 
-func (i *ImageManager) checkRefreshLocalCover(stat os.FileInfo, coverID string, ttl time.Duration) {
+func (i *ImageManager) checkRefreshLocalCover(stat os.FileInfo, coverID string, ttl time.Duration, sizes ...int) {
+	size := coverArtThumbnailSize
+	if len(sizes) > 0 {
+		size = sizes[0]
+	}
 	if time.Since(stat.ModTime()) > cachedImageValidTime {
-		i.fetchAndCacheCoverFromServer(context.Background(), coverID, ttl, nil)
+		i.fetchAndCacheCoverFromServer(context.Background(), coverID, ttl, nil, size)
 	}
 }
 
-func (i *ImageManager) filePathForCover(coverID string) string {
+func (i *ImageManager) filePathForCover(coverID string, sizes ...int) string {
+	size := coverArtThumbnailSize
+	if len(sizes) > 0 {
+		size = sizes[0]
+	}
+	if size != coverArtThumbnailSize {
+		dir := filepath.Join(i.ensureCoverCacheDir(), fmt.Sprintf("size-%d", size))
+		if i.ensureCoverCacheDir() != "" {
+			_ = os.MkdirAll(dir, 0755)
+		}
+		return filepath.Join(dir, fmt.Sprintf("%s.jpg", sanitizeFileName(coverID)))
+	}
 	return filepath.Join(i.ensureCoverCacheDir(), fmt.Sprintf("%s.jpg", sanitizeFileName(coverID)))
 }
 
@@ -368,10 +414,14 @@ func (i *ImageManager) filePathForArtistImage(id string) string {
 }
 
 func (i *ImageManager) writeJpeg(img image.Image, path string) error {
+	return i.writeJpegWithOptions(img, path, nil)
+}
+
+func (i *ImageManager) writeJpegWithOptions(img image.Image, path string, options *jpeg.Options) error {
 	f, err := os.Create(path)
 	if err == nil {
 		defer f.Close()
-		if err := jpeg.Encode(f, img, nil /*options*/); err != nil {
+		if err := jpeg.Encode(f, img, options); err != nil {
 			log.Printf("failed to cache image: %s", err.Error())
 			return err
 		}

@@ -408,6 +408,7 @@ func NewPlayQueueListRow(playQueueList *PlayQueueList, im *backend.ImageManager,
 	p.imageLoader = util.NewThumbnailLoader(im, func(i image.Image) {
 		p.cover.SetImage(i, false)
 	})
+	p.imageLoader.RequestSize = func() int { return util.ArtworkSize(p.cover) }
 	p.imageLoader.OnBeforeLoad = func() {
 		p.cover.SetImage(nil, false)
 	}
@@ -440,13 +441,13 @@ func (p *PlayQueueListRow) Update(tm *util.TrackListModel, rowNum int) {
 	// Update info that can change if this row is bound to
 	// a new track (*mediaprovider.Track)
 	meta := tm.Item.Metadata()
-	if meta.ID != p.trackID {
+	artworkChanged := meta.ID != p.trackID
+	if artworkChanged {
 		if meta.Type == mediaprovider.MediaItemTypeRadioStation {
 			p.cover.PlaceholderIcon = myTheme.RadioIcon
 		} else {
 			p.cover.PlaceholderIcon = myTheme.TracksIcon
 		}
-		p.imageLoader.Load(meta.CoverArtID)
 		p.EnsureUnfocused()
 		p.trackID = meta.ID
 		p.title.Text = meta.Name
@@ -472,4 +473,7 @@ func (p *PlayQueueListRow) Update(tm *util.TrackListModel, rowNum int) {
 	// PlayQueueList is used in the pop up queue which may be
 	// hidden and re-shown after a theme variant change
 	p.Refresh()
+	if artworkChanged || p.imageLoader.NeedsReload() {
+		p.imageLoader.Load(meta.CoverArtID)
+	}
 }

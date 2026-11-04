@@ -11,6 +11,7 @@ type coverFlightKey struct {
 	server     uuid.UUID
 	id         string
 	generation uint64
+	size       int
 }
 type coverFlight struct {
 	done    chan struct{}
@@ -23,10 +24,14 @@ type coverFlight struct {
 // Only identical requests within the same server/cache generation share work.
 // One departing card must not cancel other viewers; the last departure does.
 func (i *ImageManager) sharedCover(ctx context.Context, id string, fetch func(context.Context) (image.Image, error)) (image.Image, error) {
+	return i.sharedSizedCover(ctx, id, coverArtThumbnailSize, fetch)
+}
+
+func (i *ImageManager) sharedSizedCover(ctx context.Context, id string, size int, fetch func(context.Context) (image.Image, error)) (image.Image, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	key := coverFlightKey{i.s.ServerID, id, i.ImageCacheGeneration()}
+	key := coverFlightKey{i.s.ServerID, id, i.ImageCacheGeneration(), size}
 	i.coverFlightsMu.Lock()
 	if i.coverFlights == nil {
 		i.coverFlights = make(map[coverFlightKey]*coverFlight)
