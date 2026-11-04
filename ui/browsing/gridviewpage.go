@@ -196,6 +196,12 @@ func (g *GridViewPage[M, F]) Scroll(scrollAmt float32) {
 }
 
 func (g *GridViewPage[M, F]) OnSearched(query string) {
+	// Clearing unsubmitted text emits an empty query immediately, before the
+	// debounced search has saved a browse snapshot. There is nothing to restore.
+	if query == "" && g.searchText == "" {
+		return
+	}
+
 	if query == "" {
 		if g.sortOrder != nil {
 			g.sortOrder.Enable()
