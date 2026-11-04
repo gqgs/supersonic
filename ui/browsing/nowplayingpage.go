@@ -2,6 +2,7 @@ package browsing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -653,9 +654,16 @@ func (a *NowPlayingPage) formatMediaInfoStr(player player.BasePlayer) string {
 	if !ok {
 		return ""
 	}
-	audioInfo, err := mpv.GetMediaInfo()
+	return formatMediaInfo(mpv.GetMediaInfo())
+}
+
+func formatMediaInfo(audioInfo mpv.MediaInfo, err error) string {
 	if err != nil {
-		log.Printf("error getting playback status: %s", err.Error())
+		// Metadata is not available until mpv has decoded audio. Leave it blank
+		// during loading and retry on the next status refresh.
+		if !errors.Is(err, mpv.ErrMediaInfoUnavailable) {
+			log.Printf("error getting playback media info: %s", err.Error())
+		}
 		return ""
 	}
 	codec := audioInfo.Codec
