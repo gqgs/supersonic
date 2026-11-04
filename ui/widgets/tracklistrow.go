@@ -279,6 +279,7 @@ func NewExpandedTracklistRow(tracklist *Tracklist, im *backend.ImageManager, pla
 	t.imageLoader = util.NewThumbnailLoader(im, func(i image.Image) {
 		t.img.SetImage(i, false)
 	})
+	t.imageLoader.RequestSize = func() int { return util.ArtworkSize(t.img) }
 	t.imageLoader.OnBeforeLoad = func() {
 		t.img.SetImage(nil, false)
 	}
@@ -311,6 +312,9 @@ func (t *ExpandedTracklistRow) Update(tm *util.TrackListModel, rowNum int, _ fun
 	t.tracklistRowBase.Update(tm, rowNum, func() {
 		t.imageLoader.Load(t.coverID)
 	})
+	if t.imageLoader.NeedsReload() {
+		t.imageLoader.Load(t.coverID)
+	}
 }
 
 func NewCompactTracklistRow(tracklist *Tracklist, playingIcon fyne.CanvasObject) *CompactTracklistRow {

@@ -38,17 +38,22 @@ type NowPlayingPage struct {
 	nowPlayingPageState
 
 	// volatile state
-	nowPlaying    mediaprovider.MediaItem
-	nowPlayingID  string
-	curLyrics     *mediaprovider.Lyrics
-	curLyricsID   string // id of track currently shown in lyrics
-	curRelatedID  string // id of track currrently used to populate related list
-	curCoverArt   string // id of cover art currently shown in background / card
-	totalTime     float64
-	lastPlayPos   float64
-	queue         []mediaprovider.MediaItem
-	related       []*mediaprovider.Track
-	alreadyLoaded bool
+	nowPlaying       mediaprovider.MediaItem
+	nowPlayingID     string
+	curLyrics        *mediaprovider.Lyrics
+	curLyricsID      string // id of track currently shown in lyrics
+	curRelatedID     string // id of track currrently used to populate related list
+	coverRequest     uint64
+	coverRequestSize int
+	coverRequestID   string
+	coverGeneration  uint64
+	artworkActive    bool
+	curCoverArt      string // id of cover art currently shown in background / card
+	totalTime        float64
+	lastPlayPos      float64
+	queue            []mediaprovider.MediaItem
+	related          []*mediaprovider.Track
+	alreadyLoaded    bool
 
 	// widgets for render
 	backgroundImgA     *canvas.Image
@@ -113,6 +118,7 @@ func NewNowPlayingPage(
 	pm.OnStopped(doFmtStatus)
 
 	a.card = widgets.NewLargeNowPlayingCard()
+	a.card.OnCoverResize = a.loadCoverForDisplay
 	a.card.OnAlbumNameTapped = func() {
 		contr.NavigateTo(controller.AlbumRoute(a.nowPlaying.Metadata().AlbumID))
 	}
@@ -265,6 +271,9 @@ func (a *NowPlayingPage) CreateRenderer() fyne.WidgetRenderer {
 }
 
 func (a *NowPlayingPage) Save() SavedPage {
+	a.artworkActive = false
+	a.coverRequest++
+	a.coverRequestSize = 0
 	if a.imageLoadCancel != nil {
 		a.imageLoadCancel()
 	}
@@ -294,9 +303,7 @@ var _ CanShowNowPlaying = (*NowPlayingPage)(nil)
 
 func (a *NowPlayingPage) OnSongChange(song mediaprovider.MediaItem, lastScrobbledIfAny *mediaprovider.Track) {
 	a.nowPlaying = song
-	if a.imageLoadCancel != nil {
-		a.imageLoadCancel()
-	}
+	a.artworkActive = true
 	a.nowPlayingID = sharedutil.MediaItemIDOrEmptyStr(song)
 	a.queueList.SetNowPlaying(a.nowPlayingID)
 	if !a.alreadyLoaded {
@@ -306,15 +313,7 @@ func (a *NowPlayingPage) OnSongChange(song mediaprovider.MediaItem, lastScrobble
 	a.relatedList.SetNowPlaying(a.nowPlayingID)
 
 	a.card.Update(song)
-	if song == nil {
-		a.card.SetCoverImage(nil)
-		a.curCoverArt = ""
-	} else if artID := song.Metadata().CoverArtID; artID != a.curCoverArt {
-		a.imageLoadCancel = a.im.GetFullSizeCoverArtAsync(song.Metadata().CoverArtID, func(img image.Image, err error) {
-			a.curCoverArt = artID
-			a.onImageLoaded(img, err)
-		})
-	}
+	a.loadCoverForDisplay()
 
 	if a.tabs != nil && a.tabs.SelectedIndex() == 1 /*lyrics*/ {
 		a.updateLyrics()
@@ -323,75 +322,110 @@ func (a *NowPlayingPage) OnSongChange(song mediaprovider.MediaItem, lastScrobble
 	}
 }
 
-func (a *NowPlayingPage) onImageLoaded(img image.Image, err error) {
-	if err != nil {
-		log.Printf("error loading cover art: %v\n", err)
+// The same cover only upgrades while resizing. Shrinking and small changes
+// within a bucket reuse the current request, rather than issuing resize storms.
+func (a *NowPlayingPage) loadCoverForDisplay() {
+	if !a.artworkActive || a.card == nil {
+		return
 	}
-
-	fyne.Do(func() { a.card.SetCoverImage(img) })
-	if img == nil {
-		if a.conf.UseBackgroundImage {
-			fyne.Do(func() {
-				if !a.backgroundImgA.Hidden {
-					a.backgroundImgA.Hide()
-				}
-				if !a.backgroundImgB.Hidden {
-					a.backgroundImgB.Hide()
-				}
-			})
-		} else {
-			if a.backgroundGradient.StartColor != color.Transparent {
-				anim := canvas.NewColorRGBAAnimation(
-					a.backgroundGradient.StartColor, color.Transparent, myTheme.AnimationDurationMedium, func(c color.Color) {
-						a.backgroundGradient.StartColor = c
-						a.backgroundGradient.Refresh()
-					})
-				anim.Start()
-			}
+	id := ""
+	if a.nowPlaying != nil {
+		id = a.nowPlaying.Metadata().CoverArtID
+	}
+	size := a.card.CoverArtRequestSize()
+	generation := a.im.ImageCacheGeneration()
+	if id == a.coverRequestID && size <= a.coverRequestSize && generation == a.coverGeneration {
+		return
+	}
+	changed := id != a.coverRequestID
+	a.coverRequest++
+	request := a.coverRequest
+	if a.imageLoadCancel != nil {
+		a.imageLoadCancel()
+		a.imageLoadCancel = nil
+	}
+	a.coverRequestID, a.coverRequestSize = id, size
+	a.coverGeneration = generation
+	if changed || id == "" {
+		a.card.SetCoverImage(nil)
+		a.curCoverArt = ""
+	}
+	if id == "" {
+		if a.backgroundGradient != nil {
+			a.backgroundImgA.Hide()
+			a.backgroundImgB.Hide()
+			a.backgroundImgA.Image = nil
+			a.backgroundImgB.Image = nil
+			a.backgroundGradient.StartColor = color.Transparent
+			a.backgroundGradient.Refresh()
 		}
 		return
 	}
+	background := a.conf.UseBackgroundImage
+	a.imageLoadCancel = a.im.GetCoverArtSizedAsync(id, size, func(img image.Image, err error) {
+		a.onImageLoaded(img, err, request, id, background)
+	})
+}
 
-	if a.conf.UseBackgroundImage {
-		resized := imaging.Resize(img, 300, 0, imaging.NearestNeighbor)
-		blurred := imaging.Blur(resized, 10.0)
-		fyne.Do(func() {
-			if a.backgroundGradient.StartColor != color.Transparent {
-				a.backgroundGradient.StartColor = color.Transparent
-				a.backgroundGradient.Refresh()
-			}
+// Image processing stays off the UI thread; every UI mutation verifies that the
+// request is still current, including callbacks queued just before cancellation.
+func (a *NowPlayingPage) onImageLoaded(img image.Image, err error, request uint64, id string, background bool) {
+	if err != nil {
+		log.Printf("error loading cover art: %v\n", err)
+	}
+	var blurred image.Image
+	var dominant color.Color = color.Transparent
+	if img != nil {
+		if background {
+			blurred = imaging.Blur(imaging.Resize(img, 300, 0, imaging.NearestNeighbor), 10.0)
+		} else {
+			dominant = dominantcolor.Find(img)
+		}
+	}
+	fyne.Do(func() {
+		if request != a.coverRequest || !a.artworkActive || (a.im != nil && a.coverGeneration != a.im.ImageCacheGeneration()) {
+			return
+		}
+		a.card.SetCoverImage(img)
+		if img != nil {
+			a.curCoverArt = id
+		} else {
+			a.coverRequestSize = 0
+		}
+		if a.backgroundGradient == nil {
+			return
+		}
+		if img != nil && background {
+			a.backgroundGradient.StartColor = color.Transparent
+			a.backgroundGradient.Refresh()
 			a.backgroundImgA.Hidden = false
 			a.backgroundImgB.Hidden = false
 			a.backgroundImgA.Image = a.backgroundImgB.Image
 			a.backgroundImgB.Image = blurred
 			fyne.NewAnimation(myTheme.AnimationDurationMedium, func(f float32) {
+				if request != a.coverRequest {
+					return
+				}
 				a.backgroundImgA.Translucency = float64(f)
 				a.backgroundImgB.Translucency = float64(1 - f)
 				a.backgroundImgA.Refresh()
 				a.backgroundImgB.Refresh()
 			}).Start()
-		})
-	} else {
-		c := dominantcolor.Find(img)
-		if c == a.backgroundGradient.StartColor {
-			return
-		}
-		if !a.backgroundImgA.Hidden {
+		} else {
 			a.backgroundImgA.Hide()
-		}
-		if !a.backgroundImgB.Hidden {
 			a.backgroundImgB.Hide()
-		}
-		// Fyne animation starting is currently thread-safe,
-		// despite not being marked as such
-		// TODO: if this changes, use fyne.Do
-		anim := canvas.NewColorRGBAAnimation(
-			a.backgroundGradient.StartColor, c, myTheme.AnimationDurationMedium, func(c color.Color) {
+			if dominant == a.backgroundGradient.StartColor {
+				return
+			}
+			canvas.NewColorRGBAAnimation(a.backgroundGradient.StartColor, dominant, myTheme.AnimationDurationMedium, func(c color.Color) {
+				if request != a.coverRequest {
+					return
+				}
 				a.backgroundGradient.StartColor = c
 				a.backgroundGradient.Refresh()
-			})
-		anim.Start()
-	}
+			}).Start()
+		}
+	})
 }
 
 func (a *NowPlayingPage) updateLyrics() {

@@ -30,6 +30,8 @@ type ImageCache struct {
 	MinSize    int
 	MaxSize    int
 	DefaultTTL time.Duration
+	// MaxBytes optionally bounds estimated decoded pixel memory, even below MinSize.
+	MaxBytes int64
 
 	// Sets a callback that is invoked whenever the periodic
 	// eviction has been run. Allows for "tacking on" extra
@@ -65,6 +67,7 @@ func (i *ImageCache) SetWithTTL(key string, val image.Image, ttl time.Duration) 
 		v.expiresAt = time.Now().Add(v.ttl).Unix()
 		v.lastAccessed = now
 		i.cache[key] = v // Update the map with modified struct
+		i.enforceMemoryLimit()
 		return
 	}
 	if len(i.cache) == i.MaxSize {
@@ -76,6 +79,7 @@ func (i *ImageCache) SetWithTTL(key string, val image.Image, ttl time.Duration) 
 		expiresAt:    time.Now().Add(ttl).Unix(),
 		lastAccessed: now,
 	}
+	i.enforceMemoryLimit()
 }
 
 // Set stores an image in the cache with the default TTL.
@@ -278,5 +282,27 @@ func (i *ImageCache) EvictExpired() {
 		if item, ok := i.cache[key]; ok && item.expiresAt < now {
 			delete(i.cache, key)
 		}
+	}
+}
+
+// enforceMemoryLimit runs with mu held. Estimate pixel storage conservatively
+// for common decoded formats; the byte cap takes priority over the entry floor.
+func (i *ImageCache) enforceMemoryLimit() {
+	if i.MaxBytes <= 0 {
+		return
+	}
+	for {
+		var bytes int64
+		for _, item := range i.cache {
+			if item.val == nil {
+				continue
+			}
+			b := item.val.Bounds()
+			bytes += int64(b.Dx()) * int64(b.Dy()) * 8
+		}
+		if bytes <= i.MaxBytes || len(i.cache) == 0 {
+			return
+		}
+		i.evictOne()
 	}
 }

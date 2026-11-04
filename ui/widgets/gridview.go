@@ -326,6 +326,7 @@ func (g *GridView) createNewItemCard() fyne.CanvasObject {
 	card.SetSize(backend.AppInstance().Config.GridView.CardSize)
 	card.ItemIndex = -1
 	card.ImgLoader = util.NewThumbnailLoader(g.imageFetcher, card.Cover.SetImage)
+	card.ImgLoader.RequestSize = func() int { return util.ArtworkSize(card.Cover.Im) }
 	card.ImgLoader.CanRetry = func() bool {
 		columns := g.grid.ColumnCount()
 		rowHeight := card.Size().Height + theme.Padding()

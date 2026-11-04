@@ -24,6 +24,9 @@ type ThumbnailLoader struct {
 	cacheGeneration uint64
 	invalidated     bool
 	retryTimer      *time.Timer
+	loadedSize      int
+	// RequestSize optionally selects artwork for the physical display size.
+	RequestSize func() int
 
 	// CanRetry optionally limits deferred requests to cards still in the viewport.
 	CanRetry     func() bool
@@ -42,9 +45,9 @@ func NewThumbnailLoader(im ImageFetcher, onLoaded func(image.Image)) ThumbnailLo
 	return ThumbnailLoader{im: im, OnLoaded: onLoaded}
 }
 
-// NeedsReload reports explicit cache invalidation, not ordinary paint refreshes.
+// NeedsReload reports cache invalidation or a different physical size bucket.
 func (i *ThumbnailLoader) NeedsReload() bool {
-	return i.invalidated || i.cacheGeneration != i.generation()
+	return i.invalidated || i.cacheGeneration != i.generation() || (i.RequestSize != nil && i.RequestSize() != i.loadedSize)
 }
 
 func (i *ThumbnailLoader) generation() uint64 {
@@ -77,20 +80,35 @@ func (i *ThumbnailLoader) load(coverID string, retries int) {
 	i.invalidated = false
 	request := i.request
 	i.cacheGeneration = i.generation()
+	if i.RequestSize != nil {
+		i.loadedSize = i.RequestSize()
+	}
 	if coverID == "" {
 		i.callOnLoaded(nil)
 		return
 	}
-	if img, ok := i.im.GetCoverThumbnailFromCache(coverID); ok {
+	cached := i.im.GetCoverThumbnailFromCache
+	fetch := i.im.GetCoverThumbnailAsync
+	if sized, ok := i.im.(interface {
+		GetCoverArtSizedFromCache(string, int) (image.Image, bool)
+		GetCoverArtSizedAsync(string, int, func(image.Image, error)) context.CancelFunc
+	}); ok && i.RequestSize != nil {
+		size := i.loadedSize
+		cached = func(id string) (image.Image, bool) { return sized.GetCoverArtSizedFromCache(id, size) }
+		fetch = func(id string, cb func(image.Image, error)) context.CancelFunc {
+			return sized.GetCoverArtSizedAsync(id, size, cb)
+		}
+	}
+	if img, ok := cached(coverID); ok {
 		i.callOnLoaded(img)
 		return
 	}
 	if i.OnBeforeLoad != nil {
 		i.OnBeforeLoad()
 	}
-	i.prevLoadCancel = i.im.GetCoverThumbnailAsync(coverID, func(img image.Image, err error) {
+	i.prevLoadCancel = fetch(coverID, func(img image.Image, err error) {
 		fyne.Do(func() {
-			if request != i.request {
+			if request != i.request || i.cacheGeneration != i.generation() {
 				return
 			}
 			if err != nil {

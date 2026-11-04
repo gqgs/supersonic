@@ -1,6 +1,7 @@
 package browsing
 
 import (
+	"image"
 	"log"
 	"sort"
 	"strconv"
@@ -618,6 +619,7 @@ func (s *artistPageState) Restore() Page {
 const artistBioNotAvailableKey = "Artist biography not available."
 
 type ArtistPageHeader struct {
+	artworkLoader *util.ThumbnailLoader
 	widget.BaseWidget
 
 	Compact bool
@@ -714,6 +716,9 @@ func NewArtistPageHeader(page *ArtistPage) *ArtistPageHeader {
 }
 
 func (a *ArtistPageHeader) Clear() {
+	if a.artworkLoader != nil {
+		a.artworkLoader.Cancel()
+	}
 	a.artistID = ""
 	a.artistImageID = ""
 	a.favoriteBtn.IsFavorited = false
@@ -739,13 +744,14 @@ func (a *ArtistPageHeader) Update(artist *mediaprovider.ArtistWithAlbums, im *ba
 		return
 	}
 	a.artistImageID = artist.CoverArtID
-	go func() {
-		if cover, err := im.GetCoverThumbnail(artist.CoverArtID); err == nil {
-			fyne.Do(func() { a.artistImage.SetImage(cover, true) })
-		} else {
-			log.Printf("error fetching cover: %v", err)
-		}
-	}()
+	if a.artworkLoader != nil {
+		a.artworkLoader.Cancel()
+	}
+	loader := util.NewThumbnailLoader(im, func(img image.Image) { a.artistImage.SetImage(img, true) })
+	loader.RequestSize = func() int { return util.ArtworkSize(a.artistImage) }
+	a.artworkLoader = &loader
+	loader.Load(a.artistImageID)
+
 }
 
 func (a *ArtistPageHeader) UpdateInfo(info *mediaprovider.ArtistInfo) {
@@ -874,4 +880,13 @@ func (a *ArtistPageHeader) createContainer() {
 
 func (a *ArtistPageHeader) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(a.container)
+}
+
+// Re-evaluate once layout attaches the header to a canvas, so initial requests
+// made before layout can upgrade for HiDPI and expanded headers.
+func (a *ArtistPageHeader) Resize(size fyne.Size) {
+	a.BaseWidget.Resize(size)
+	if a.artworkLoader != nil && a.artistImageID != "" && a.artworkLoader.NeedsReload() {
+		a.artworkLoader.Load(a.artistImageID)
+	}
 }
