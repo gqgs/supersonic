@@ -29,12 +29,13 @@ type AlbumPage struct {
 
 	albumPageState
 
-	disposed     bool
-	header       *AlbumPageHeader
-	tracks       []*mediaprovider.Track
-	tracklist    *widgets.Tracklist
-	nowPlayingID string
-	container    *fyne.Container
+	disposed       bool
+	loadGeneration uint64
+	header         *AlbumPageHeader
+	tracks         []*mediaprovider.Track
+	tracklist      *widgets.Tracklist
+	nowPlayingID   string
+	container      *fyne.Container
 }
 
 type albumPageState struct {
@@ -114,8 +115,7 @@ func newAlbumPage(
 		container.New(&layout.CustomPaddedLayout{LeftPadding: 15, RightPadding: 15, TopPadding: 15, BottomPadding: 10}, a.header),
 		nil, nil, nil, container.New(&layout.CustomPaddedLayout{LeftPadding: 15, RightPadding: 15, BottomPadding: 15}, a.tracklist))
 
-	a.tracklist.SetLoading(true)
-	go a.load()
+	a.startLoad()
 	return a
 }
 
@@ -149,8 +149,7 @@ func (a *AlbumPage) OnSongChange(track mediaprovider.MediaItem, lastScrobbledIfA
 }
 
 func (a *AlbumPage) Reload() {
-	a.tracklist.SetLoading(true)
-	go a.load()
+	a.startLoad()
 }
 
 var _ CanSelectAll = (*AlbumPage)(nil)
@@ -169,8 +168,25 @@ func (a *AlbumPage) Scroll(scrollAmt float32) {
 	a.tracklist.ScrollBy(scrollAmt)
 }
 
+// startLoad runs on the UI goroutine. Each reload invalidates earlier metadata
+// and quality requests before another goroutine is started.
+func (a *AlbumPage) startLoad() {
+	if a.disposed {
+		return
+	}
+	a.loadGeneration++
+	generation := a.loadGeneration
+	a.header.clearAudioQuality()
+	a.tracklist.SetLoading(true)
+	go a.load(generation)
+}
+
+func (a *AlbumPage) loadIsCurrent(generation uint64) bool {
+	return !a.disposed && a.loadGeneration == generation && a.header.page == a
+}
+
 // should be called asynchronously
-func (a *AlbumPage) load() {
+func (a *AlbumPage) load(generation uint64) {
 	album, err := a.mp.GetAlbum(a.albumID)
 	if err != nil {
 		msg := err.Error()
@@ -180,17 +196,21 @@ func (a *AlbumPage) load() {
 			toastMsg = "The request timed out"
 		}
 		fyne.Do(func() {
+			if !a.loadIsCurrent(generation) {
+				return
+			}
 			a.tracklist.SetLoading(false)
 			a.contr.ToastProvider.ShowErrorToast(lang.L(toastMsg))
 		})
 		return
 	}
-	if a.disposed {
-		return
-	}
 	fyne.Do(func() {
+		if !a.loadIsCurrent(generation) {
+			return
+		}
 		a.tracklist.SetLoading(false)
 		a.header.Update(album, a.im)
+		a.loadAudioQuality(generation)
 		a.tracklist.Options.ShowDiscNumber = len(album.Tracks) > 0 && album.Tracks[0].DiscNumber != album.Tracks[len(album.Tracks)-1].DiscNumber
 		a.tracks = album.Tracks
 		a.tracklist.SetTracks(album.Tracks)
@@ -208,8 +228,9 @@ type AlbumPageHeader struct {
 
 	Compact bool
 
-	albumID string
-	coverID string
+	albumID           string
+	coverID           string
+	qualityGeneration uint64
 
 	page *AlbumPage
 
@@ -220,6 +241,7 @@ type AlbumPageHeader struct {
 	artistLabelSpace      *util.Space // TODO: remove when no longer needed
 	genreLabel            *widgets.MultiHyperlink
 	miscLabel             *widget.Label
+	qualityLabel          *widget.Label
 	shareMenuItem         *fyne.MenuItem
 	collapseBtn           *widgets.HeaderCollapseButton
 	artistReleaseTypeLine *fyne.Container
@@ -258,6 +280,10 @@ func NewAlbumPageHeader(page *AlbumPage) *AlbumPageHeader {
 		a.page.contr.NavigateTo(controller.GenreRoute(genre))
 	}
 	a.miscLabel = widget.NewLabel("")
+	a.qualityLabel = widget.NewLabel("")
+	a.qualityLabel.Importance = widget.LowImportance
+	a.qualityLabel.Truncation = fyne.TextTruncateEllipsis
+	a.qualityLabel.Hide()
 	playButton := widget.NewButtonWithIcon(lang.L("Play"), theme.MediaPlayIcon(), func() {
 		go a.page.pm.PlayAlbum(a.page.albumID, 0, false)
 	})
@@ -326,7 +352,7 @@ func NewAlbumPageHeader(page *AlbumPage) *AlbumPageHeader {
 				container.New(layout.NewCustomPaddedVBoxLayout(theme.Padding()-10),
 					a.titleLabel,
 					container.NewVBox(
-						container.New(layout.NewCustomPaddedVBoxLayout(theme.Padding()-12), a.artistReleaseTypeLine, a.genreLabel, a.miscLabel),
+						container.New(layout.NewCustomPaddedVBoxLayout(theme.Padding()-12), a.artistReleaseTypeLine, a.genreLabel, a.miscLabel, a.qualityLabel),
 						container.NewVBox(
 							container.NewHBox(util.NewHSpace(2), playButton, shuffleBtn, menuBtn),
 							container.NewHBox(util.NewHSpace(2), a.toggleFavButton),
@@ -345,6 +371,7 @@ func (a *AlbumPageHeader) CreateRenderer() fyne.WidgetRenderer {
 }
 
 func (a *AlbumPageHeader) Update(album *mediaprovider.AlbumWithTracks, im *backend.ImageManager) {
+	a.clearAudioQuality()
 	a.albumID = album.ID
 	a.coverID = album.CoverArtID
 	a.titleLabel.Segments[0].(*widget.TextSegment).Text = album.Name
@@ -368,6 +395,7 @@ func (a *AlbumPageHeader) Update(album *mediaprovider.AlbumWithTracks, im *backe
 }
 
 func (a *AlbumPageHeader) Clear() {
+	a.clearAudioQuality()
 	if a.artworkLoader != nil {
 		a.artworkLoader.Cancel()
 	}
@@ -406,6 +434,7 @@ func (a *AlbumPageHeader) Refresh() {
 	a.artistReleaseTypeLine.Hidden = a.Compact
 	a.genreLabel.Hidden = a.Compact
 	a.miscLabel.Hidden = a.Compact
+	a.qualityLabel.Hidden = a.Compact || a.qualityLabel.Text == ""
 	a.toggleFavButton.Hidden = a.Compact
 	a.collapseBtn.Collapsed = a.Compact
 	if a.Compact {

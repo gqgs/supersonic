@@ -39,6 +39,9 @@ type subsonicMediaProvider struct {
 	radiosCached   []*mediaprovider.RadioStation
 	radiosCachedAt int64 // unix
 
+	albumAudioQualityOnce      sync.Once
+	albumAudioQualitySupported bool
+
 	playbackReportOnce      sync.Once
 	playbackReportSupported bool
 }

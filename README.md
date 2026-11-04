@@ -62,6 +62,16 @@ Supersonic supports any music server with a Subsonic (or OpenSubsonic) API, or J
 * [ ] Offline mode (eventually planned)
 * [ ] iOS/Android support (maybe eventually planned)
 
+### Album audio quality availability
+
+Album pages can show an optional **Available** label for Dolby Atmos, Dolby Audio,
+Hi-Res Lossless, or Lossless when a compatible bridge advertises the custom
+OpenSubsonic `appleMusicAlbumAudioQuality` extension (version 1). This describes
+Apple Music catalog availability, not the format currently playing or the output
+device's capabilities. Hi-Res Lossless takes precedence over Lossless; spatial
+audio availability can appear alongside it. Unsupported servers and unknown
+availability show no label.
+
 ## Installation
 
 Platform-specific installation instructions are listed below. In addition to the most recent stable release, you can also download the latest build from the `main` branch via the [Actions](https://github.com/supersonic-app/supersonic/actions) tab to get unreleased features and bug fixes (you must be signed in to Github to do this). If you prefer to build from source, then see the [build instructions](BUILD.md) for your platform.
