@@ -288,6 +288,12 @@ type MediaProvider interface {
 	RescanLibrary() error
 }
 
+// SupportsAlbumAudioQuality provides catalog availability, not current playback quality.
+// An empty result means unavailable or unknown.
+type SupportsAlbumAudioQuality interface {
+	GetAlbumAudioQuality(albumID string) ([]string, error)
+}
+
 type SupportsRating interface {
 	SetRating(params RatingFavoriteParameters, rating int) error
 }
