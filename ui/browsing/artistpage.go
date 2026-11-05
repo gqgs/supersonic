@@ -266,34 +266,38 @@ func (a *ArtistPage) getGroupedReleasesModel() widgets.GroupedReleasesModel {
 	if a.artistInfo == nil {
 		return widgets.GroupedReleasesModel{}
 	}
-	groups := make([][]*mediaprovider.Album, 5)
+	groups := make([][]*mediaprovider.Album, 6)
 	for _, album := range a.artistInfo.Albums {
 		group := releaseSection(album.ReleaseTypes)
 		groups[group] = append(groups[group], album)
 	}
 	a.sortAlbumsSlices(groups...)
 	return widgets.GroupedReleasesModel{
-		Albums:        sharedutil.MapSlice(groups[0], a.albumToGridViewItemModel),
-		SinglesAndEPs: sharedutil.MapSlice(groups[1], a.albumToGridViewItemModel),
-		LiveAlbums:    sharedutil.MapSlice(groups[2], a.albumToGridViewItemModel),
-		Compilations:  sharedutil.MapSlice(groups[3], a.albumToGridViewItemModel),
-		Others:        sharedutil.MapSlice(groups[4], a.albumToGridViewItemModel),
+		Albums:       sharedutil.MapSlice(groups[0], a.albumToGridViewItemModel),
+		EPs:          sharedutil.MapSlice(groups[1], a.albumToGridViewItemModel),
+		Singles:      sharedutil.MapSlice(groups[2], a.albumToGridViewItemModel),
+		LiveAlbums:   sharedutil.MapSlice(groups[3], a.albumToGridViewItemModel),
+		Compilations: sharedutil.MapSlice(groups[4], a.albumToGridViewItemModel),
+		Others:       sharedutil.MapSlice(groups[5], a.albumToGridViewItemModel),
 	}
 }
 
 // Secondary types override Album; live compilations belong with live releases.
+// EP wins over Single when both are present, without duplicating the release.
 // Single/EP takes precedence over miscellaneous secondary types (e.g. Remix).
 // Zero means missing metadata and retains the ordinary album fallback.
 func releaseSection(rt mediaprovider.ReleaseTypes) int {
 	switch {
 	case rt&mediaprovider.ReleaseTypeLive != 0:
-		return 2
-	case rt&mediaprovider.ReleaseTypeCompilation != 0:
 		return 3
-	case rt&(mediaprovider.ReleaseTypeSingle|mediaprovider.ReleaseTypeEP) != 0:
-		return 1
-	case rt&^mediaprovider.ReleaseTypeAlbum != 0:
+	case rt&mediaprovider.ReleaseTypeCompilation != 0:
 		return 4
+	case rt&mediaprovider.ReleaseTypeEP != 0:
+		return 1
+	case rt&mediaprovider.ReleaseTypeSingle != 0:
+		return 2
+	case rt&^mediaprovider.ReleaseTypeAlbum != 0:
+		return 5
 	default:
 		return 0
 	}
