@@ -23,7 +23,9 @@ type ThumbnailLoader struct {
 	request         uint64
 	cacheGeneration uint64
 	invalidated     bool
-	retryTimer      *time.Timer
+	retryTimer      interface{ Stop() bool }
+	now             func() time.Time
+	afterFunc       func(time.Duration, func()) interface{ Stop() bool }
 	loadedSize      int
 	// RequestSize optionally selects artwork for the physical display size.
 	RequestSize func() int
@@ -120,23 +122,32 @@ func (i *ThumbnailLoader) load(coverID string, retries int) {
 				// Retry only pending artwork, never known missing art or generic failures.
 				// Three deferred attempts bound work for a stationary card.
 				if request == i.request && retries > 0 && errors.Is(err, mediaprovider.ErrArtworkPending) && errors.As(err, &cooldown) {
-					delay := time.Until(cooldown.RetryAt)
+					now := time.Now
+					if i.now != nil {
+						now = i.now
+					}
+					delay := cooldown.RetryAt.Sub(now())
 					if delay < time.Second {
 						delay = time.Second
 					}
-					if delay <= 5*time.Minute {
-						i.retryTimer = time.AfterFunc(delay, func() {
-							fyne.Do(func() {
-								if request == i.request {
-									if i.CanRetry != nil && !i.CanRetry() {
-										i.invalidated = true
-										return
-									}
-									i.load(coverID, retries-1)
-								}
-							})
-						})
+					// Long catalog cooldowns release the fetch slot but must not
+					// strand visible cards. The attempt count bounds retries;
+					// cancellation and generation checks bound their lifetime.
+					after := i.afterFunc
+					if after == nil {
+						after = func(d time.Duration, f func()) interface{ Stop() bool } { return time.AfterFunc(d, f) }
 					}
+					i.retryTimer = after(delay, func() {
+						fyne.Do(func() {
+							if request == i.request && i.cacheGeneration == i.generation() {
+								if i.CanRetry != nil && !i.CanRetry() {
+									i.invalidated = true
+									return
+								}
+								i.load(coverID, retries-1)
+							}
+						})
+					})
 				}
 			} else {
 				i.callOnLoaded(img)
