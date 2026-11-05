@@ -97,7 +97,7 @@ func NewPlaybackManager(
 
 func (p *PlaybackManager) findWfmImageJob(id string, uncanceledOnly bool) (*WaveformImageJob, bool) {
 	for _, j := range p.wfmImageJobs {
-		if j != nil && j.ItemID == id && (!uncanceledOnly || !j.Canceled()) {
+		if j != nil && j.ItemID == id && (!uncanceledOnly || (!j.Canceled() && j.Err() == nil)) {
 			return j, true
 		}
 	}
@@ -229,7 +229,7 @@ func (p *PlaybackManager) handleWaveformImageSongChange(item mediaprovider.Media
 			for _, cb := range p.onWaveformImgUpdate {
 				cb(img)
 			}
-			if !job.done && job != nil {
+			if !job.Done() {
 				updateUnfinishedJob(job)
 			}
 		}

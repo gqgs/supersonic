@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-audio/audio"
@@ -23,21 +24,23 @@ import (
 
 type WaveformImageGenerator struct {
 	audioCache *AudioCache
+	ctx        context.Context
+	cancel     context.CancelFunc
 
 	// converter is a single, long-lived mpv core used to transcode audio
 	// files to WAV for waveform analysis. Previously a new mpv core was
 	// created and destroyed for every waveform job (i.e. on every track
 	// switch that wasn't already cached); reusing one core instead avoids
 	// repeated full libmpv init/teardown cycles right at track-switch time.
-	converterOnce sync.Once
-	converter     *mpv.Mpv
-	converterErr  error
-	convertMu     sync.Mutex // serializes use of the shared converter core
+	converter       *mpv.Mpv
+	converterErr    error
+	converterClosed bool
+	convertGate     chan struct{} // cancellable serialization of the shared core
 
 	// aoReloadUnsupported is set once the "ao-reload" command (see
 	// convertToWav) fails on this libmpv build. It isn't part of mpv's
 	// public API, so it may be missing or removed in some builds/versions.
-	// Guarded by convertMu.
+	// Guarded by convertGate.
 	aoReloadUnsupported bool
 }
 
@@ -75,15 +78,21 @@ type WaveformImageJob struct {
 }
 
 func (w *WaveformImageJob) Cancel() {
-	if w != nil {
-		w.canceled = true
-		if w.cancel != nil {
-			w.cancel()
-		}
+	if w == nil {
+		return
+	}
+	w.lock.Lock()
+	w.canceled = true
+	cancel := w.cancel
+	w.lock.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }
 
 func (w *WaveformImageJob) Canceled() bool {
+	w.lock.Lock()
+	defer w.lock.Unlock()
 	return w.canceled
 }
 
@@ -100,146 +109,219 @@ func (w *WaveformImageJob) Err() error {
 }
 
 func (w *WaveformImageJob) Get() *WaveformImage {
-	if w.Done() {
-		return w.img
-	}
-	// return a new *WaveformImage with data copied
-	// from the valid region of w.img
-	height := w.img.Bounds().Dy()
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	// Even after an error a worker may still be winding down. Return a
+	// snapshot, never an image a background goroutine can still change.
 	result := NewWaveformImage()
-
-	// Copy each scanline from w.img to result
-	for y := range height {
-		srcOffset := w.img.PixOffset(0, y)
-		dstOffset := result.PixOffset(0, y)
-		copy(result.Pix[dstOffset:dstOffset+w.progress*4], w.img.Pix[srcOffset:srcOffset+w.progress*4])
+	for y := range w.img.Bounds().Dy() {
+		src := w.img.PixOffset(0, y)
+		dst := result.PixOffset(0, y)
+		copy(result.Pix[dst:dst+w.progress*4], w.img.Pix[src:src+w.progress*4])
 	}
-
 	return result
 }
 
 func NewWaveformImageGenerator(cache *AudioCache) *WaveformImageGenerator {
-	return &WaveformImageGenerator{audioCache: cache}
+	ctx, cancel := context.WithCancel(cache.rootCtx)
+	return &WaveformImageGenerator{audioCache: cache, ctx: ctx, cancel: cancel, convertGate: make(chan struct{}, 1)}
 }
 
 func (w *WaveformImageGenerator) StartWaveformGeneration(item *mediaprovider.Track) *WaveformImageJob {
-	ctx, cancel := context.WithCancel(w.audioCache.rootCtx)
-	job := &WaveformImageJob{
-		img:    NewWaveformImage(),
-		ItemID: item.ID,
-		cancel: cancel,
-	}
-
-	// Set up a pipeline of concurrent tasks that need to complete to generate
-	// a waveform image:
-	// 1. Begin downloading the file from the server
-	// 2. Begin transcoding it to WAV
-	// 3. Begin analyzing the resulting WAV file
-	// 4. Begin generating the image from the analysis data
+	ctx, cancel := context.WithCancel(w.ctx)
+	job := &WaveformImageJob{img: NewWaveformImage(), ItemID: item.ID, cancel: cancel}
 	go func() {
-		path := w.audioCache.ObtainReferenceToFile(job.ItemID)
-		// wait for file to begin downloading if not already
-		for path == "" {
-			time.Sleep(50 * time.Millisecond)
-			if e := ctx.Err(); e != nil {
-				job.setError(e)
-				return
-			}
-			path = w.audioCache.ObtainReferenceToFile(job.ItemID)
-		}
-		// and wait for content to begin being written
-		for {
-			if s, err := os.Stat(path); err == nil && s.Size() > 0 {
-				break
-			}
-			time.Sleep(50 * time.Millisecond)
-			if e := ctx.Err(); e != nil {
-				job.setError(e)
-				return
-			}
-		}
-
-		dir := filepath.Dir(path)
-		var transcodeFile string
-		for i := 0; true; i++ {
-			if i > 0 {
-				transcodeFile = filepath.Join(dir, fmt.Sprintf("%s_waveform_%d.wav", filepath.Base(path), i))
-			} else {
-				transcodeFile = filepath.Join(dir, filepath.Base(path)+"_waveform.wav")
-			}
-			if _, err := os.Stat(transcodeFile); os.IsNotExist(err) {
-				break // found a suitable filename that doesn't exist
-			}
-		}
-
-		fileDone := func() bool {
-			return w.audioCache.IsFullyDownloaded(job.ItemID)
-		}
-
-		// If file isn't fully downloaded from server,
-		// stream it to MPV via fifo so it doesn't possibly
-		// terminate the conversion to WAV early encountering EOF
-		if !fileDone() {
-			srv, err := util.NewFileStreamerServer(path, fileDone)
-			if err != nil {
-				job.setError(err)
-				return
-			}
-
-			path = srv.Addr()
-
-			go srv.Serve()
-			time.Sleep(10 * time.Millisecond) // make sure server has time to come up
-		}
-
-		// Start converting the file to WAV for analysis
-		var wavConvertDone bool
-		go func() {
-			err := w.convertToWav(ctx, job.ItemID, path, transcodeFile)
-			wavConvertDone = true
-			if err != nil {
-				job.setError(err)
-			}
-		}()
-
-		// Wait for transcoded WAV file to begin being written
-		for {
-			if s, err := os.Stat(transcodeFile); err == nil && s.Size() > 0 {
-				break
-			}
-			time.Sleep(50 * time.Millisecond)
-			if e := ctx.Err(); e != nil {
-				job.setError(e)
-				return
-			}
-		}
-
-		// Start analyzing the converted wav file
-		data := &waveformData{notify: make(chan struct{}, 1)}
-		go func() {
-			err := analyzeWavFile(ctx, transcodeFile, data, item.Duration.Milliseconds(), func() bool { return wavConvertDone })
-			if err != nil {
-				job.setError(err)
-			}
-			data.done = true
-			// Final notification that processing is complete
-			select {
-			case data.notify <- struct{}{}:
-			default:
-			}
-			close(data.notify)
-		}()
-
-		// Start generating the waveform image
-		go func() {
-			generateWaveformImage(ctx, data, job)
+		defer cancel()
+		defer func() {
+			job.lock.Lock()
 			job.done = true
+			job.lock.Unlock()
 		}()
+		if err := w.generate(ctx, job, item.Duration.Milliseconds()); err != nil {
+			job.setError(err)
+		}
 	}()
 	return job
 }
 
+func (w *WaveformImageGenerator) generate(ctx context.Context, job *WaveformImageJob, duration int64) error {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	var ref *cacheFileReference
+	for ref == nil {
+		var err error
+		ref, err = w.audioCache.obtainFile(job.ItemID)
+		if err != nil {
+			return err
+		}
+		if ref == nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C:
+			}
+		}
+	}
+	defer ref.release()
+	path := ref.entry.path
+	for {
+		done, err := ref.status()
+		if err != nil {
+			return err
+		}
+		if stat, err := os.Stat(path); err == nil && stat.Size() > 0 {
+			break
+		}
+		if done {
+			return errors.New("audio download produced no data")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+
+	// Reserve a unique output name. Concurrent/repeated jobs must never
+	// share an output file, even while a previous conversion is stopping.
+	f, err := os.CreateTemp(filepath.Dir(path), "waveform-*.wav")
+	if err != nil {
+		return err
+	}
+	transcodeFile := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(transcodeFile)
+		return err
+	}
+	defer os.Remove(transcodeFile)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if done, _ := ref.status(); !done {
+		srv, err := util.NewFileStreamerServerWithContext(ctx, path, ref.status)
+		if err != nil {
+			return err
+		}
+		defer srv.Close()
+		path = srv.Addr()
+		go func() { _ = srv.Serve() }()
+	}
+
+	// Stop conversion/analysis as soon as the original download fails.
+	// This watches the pinned generation, never a same-ID retry.
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		tick := time.NewTicker(50 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			done, err := ref.status()
+			if err != nil {
+				job.setError(err)
+				cancel()
+				return
+			}
+			if done {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			}
+		}
+	}()
+	defer func() { cancel(); <-watchDone }()
+
+	var converted atomic.Bool
+	convertDone := make(chan struct{})
+	var convertErr error // read only after convertDone is closed
+	go func() {
+		defer close(convertDone)
+		convertErr = w.convertToWav(ctx, job.ItemID, path, transcodeFile)
+		if convertErr != nil {
+			job.setError(convertErr)
+			cancel()
+		}
+		converted.Store(true)
+	}()
+	// Keep the source reference and output until the converter has stopped.
+	defer func() { cancel(); <-convertDone }()
+
+	for {
+		if stat, err := os.Stat(transcodeFile); err == nil && stat.Size() >= 8192 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-convertDone:
+			if convertErr != nil {
+				return convertErr
+			}
+			if err := validateWaveformOutput(transcodeFile); err != nil {
+				return err
+			}
+			goto analyze
+		case <-ticker.C:
+		}
+	}
+
+analyze:
+	data := &waveformData{notify: make(chan struct{}, 1)}
+	analysisDone := make(chan error, 1)
+	go func() {
+		err := analyzeWavFile(ctx, transcodeFile, data, duration, converted.Load)
+		if err != nil {
+			job.setError(err)
+			cancel()
+		}
+		data.lock.Lock()
+		data.done = true
+		data.lock.Unlock()
+		close(data.notify)
+		analysisDone <- err
+	}()
+	generateWaveformImage(ctx, data, job)
+	if err := <-analysisDone; err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-convertDone:
+		if convertErr != nil {
+			return convertErr
+		}
+	}
+	// A decoder may stop after the declared audio length, before the HTTP
+	// body has finished. Do not hide a late truncated/canceled download.
+	for {
+		done, err := ref.status()
+		if err != nil {
+			return err
+		}
+		if done {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func validateWaveformOutput(path string) error {
+	stat, err := os.Stat(path)
+	if err != nil || stat.Size() <= 44 {
+		return errors.New("waveform conversion produced no audio")
+	}
+	return nil
+}
+
 type waveformData struct {
+	lock sync.Mutex
 	Peak [1024]byte
 	RMS  [1024]byte
 
@@ -257,23 +339,32 @@ func generateWaveformImage(ctx context.Context, data *waveformData, job *Wavefor
 	translucentColor := color.NRGBA{R: 255, G: 255, B: 255, A: 128}
 
 	for x := range 1024 {
-		// Wait for data to be available instead of polling
-		for data.progress <= x && !data.done {
+		var rms, peak byte
+		for {
+			data.lock.Lock()
+			available, done := data.progress > x, data.done
+			if available {
+				rms, peak = data.RMS[x], data.Peak[x]
+			}
+			data.lock.Unlock()
+			if available {
+				break
+			}
+			if done {
+				return
+			}
 			select {
 			case <-ctx.Done():
-				return // expired
+				return
 			case <-data.notify:
-				// New data available or processing complete
 			}
 		}
-
-		if data.progress <= x {
-			return // done but data not available for this x
+		if ctx.Err() != nil {
+			return
 		}
-
-		rmsPixels := int(data.RMS[x]) * centerY / 255
-		peakPixels := int(data.Peak[x]) * centerY / 255
-
+		rmsPixels := int(rms) * centerY / 255
+		peakPixels := int(peak) * centerY / 255
+		job.lock.Lock()
 		// Always draw at least 2 center pixels
 		setPixel(job.img, x, top, opaqueColor)
 		setPixel(job.img, x, bottom, opaqueColor)
@@ -290,6 +381,7 @@ func generateWaveformImage(ctx context.Context, data *waveformData, job *Wavefor
 			setPixel(job.img, x, bottom+i, translucentColor)
 		}
 		job.progress = x + 1
+		job.lock.Unlock()
 	}
 }
 
@@ -300,7 +392,6 @@ func analyzeWavFile(ctx context.Context, transcodeFile string, data *waveformDat
 		return err
 	}
 	defer f.Close()
-	defer os.Remove(transcodeFile)
 
 	decoder := wav.NewDecoder(f)
 	if !decoder.IsValidFile() {
@@ -308,9 +399,12 @@ func analyzeWavFile(ctx context.Context, transcodeFile string, data *waveformDat
 	}
 
 	format := decoder.Format()
+	if format.SampleRate <= 0 || format.NumChannels <= 0 {
+		return errors.New("invalid waveform audio format")
+	}
 
 	totalSamples := format.SampleRate * int(millisecs) / 1000
-	samplesPerChunk := totalSamples / 1024
+	samplesPerChunk := max(1, totalSamples/1024)
 
 	if err := decoder.FwdToPCM(); err != nil {
 		return err
@@ -326,6 +420,7 @@ func analyzeWavFile(ctx context.Context, transcodeFile string, data *waveformDat
 
 	// file read loop
 	doneReading := false
+	samplesRead := 0
 	for !doneReading {
 		select {
 		case <-ctx.Done():
@@ -365,6 +460,7 @@ func analyzeWavFile(ctx context.Context, transcodeFile string, data *waveformDat
 		}
 
 		n, err := decoder.PCMBuffer(buf)
+		samplesRead += n
 		if n == 0 || err == io.EOF {
 			if fileIsDone {
 				doneReading = true
@@ -373,7 +469,7 @@ func analyzeWavFile(ctx context.Context, transcodeFile string, data *waveformDat
 				return errors.New("WAV read got premature EOF")
 			}
 		}
-		if err != nil {
+		if err != nil && err != io.EOF {
 			return err
 		}
 
@@ -383,13 +479,15 @@ func analyzeWavFile(ctx context.Context, transcodeFile string, data *waveformDat
 			chunkSamples = append(chunkSamples, sample)
 
 			if len(chunkSamples) >= samplesPerChunk {
+				data.lock.Lock()
 				if curChunk < 1024 {
 					peak, rms := computePeakAndRMS(chunkSamples)
 					data.Peak[curChunk] = float64ToByte(peak)
 					data.RMS[curChunk] = float64ToByte(rms)
 				}
 				curChunk++
-				data.progress = curChunk
+				data.progress = min(curChunk, 1024)
+				data.lock.Unlock()
 				// Notify that new data is available (non-blocking)
 				select {
 				case data.notify <- struct{}{}:
@@ -403,12 +501,18 @@ func analyzeWavFile(ctx context.Context, transcodeFile string, data *waveformDat
 		}
 	}
 
+	if samplesRead == 0 {
+		return errors.New("waveform conversion produced no audio")
+	}
+
 	// analyze the last chunk if it's partially filled with samples
 	if curChunk < 1024 && len(chunkSamples) > 0 {
 		peak, rms := computePeakAndRMS(chunkSamples)
+		data.lock.Lock()
 		data.Peak[curChunk] = float64ToByte(peak)
 		data.RMS[curChunk] = float64ToByte(rms)
 		data.progress = curChunk + 1
+		data.lock.Unlock()
 		// Notify that final data is available (non-blocking)
 		select {
 		case data.notify <- struct{}{}:
@@ -420,10 +524,14 @@ func analyzeWavFile(ctx context.Context, transcodeFile string, data *waveformDat
 }
 
 func (j *WaveformImageJob) setError(err error) {
+	if err == nil {
+		return
+	}
 	j.lock.Lock()
-	defer j.lock.Unlock()
-
-	j.err = err
+	if j.err == nil {
+		j.err = err
+	}
+	j.lock.Unlock()
 }
 
 func computePeakAndRMS(chunk []float64) (peak float64, rms float64) {
@@ -456,9 +564,10 @@ func float64ToByte(val float64) byte {
 // NewWaveformImageGenerator so that if waveform generation is never
 // triggered, no mpv core is ever spun up.
 func (w *WaveformImageGenerator) converterCore() (*mpv.Mpv, error) {
-	w.converterOnce.Do(func() {
+	// All callers hold convertGate, including initialization and replacement.
+	if w.converter == nil {
 		w.converter, w.converterErr = newConverterCore()
-	})
+	}
 	return w.converter, w.converterErr
 }
 
@@ -485,6 +594,7 @@ func newConverterCore() (*mpv.Mpv, error) {
 	m.SetOptionString("audio-channels", "mono")
 	m.SetOptionString("audio-format", "s16")
 	if err := m.Initialize(); err != nil {
+		m.TerminateDestroy()
 		return nil, err
 	}
 	return m, nil
@@ -495,7 +605,7 @@ func newConverterCore() (*mpv.Mpv, error) {
 // when "ao-reload" can't be relied on to make a reused core pick up a new
 // ao-pcm-file (see convertToWav): a freshly initialized core's AO always
 // reads the current ao-pcm-file the first time it's used. Callers must hold
-// convertMu.
+// convertGate.
 func (w *WaveformImageGenerator) recreateConverterLocked() (*mpv.Mpv, error) {
 	if w.converter != nil {
 		w.converter.Command([]string{"stop"})
@@ -510,15 +620,36 @@ func (w *WaveformImageGenerator) recreateConverterLocked() (*mpv.Mpv, error) {
 	return m, nil
 }
 
-func (w *WaveformImageGenerator) convertToWav(ctx context.Context, id, inPath, outPath string) error {
+func (w *WaveformImageGenerator) convertToWav(ctx context.Context, _, inPath, outPath string) (retErr error) {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-w.ctx.Done():
+		return w.ctx.Err()
+	case w.convertGate <- struct{}{}:
+	}
+	defer func() { <-w.convertGate }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if w.converterClosed {
+		return context.Canceled
+	}
 	m, err := w.converterCore()
 	if err != nil {
 		return err
 	}
-
-	// Only one conversion can run on the shared core at a time.
-	w.convertMu.Lock()
-	defer w.convertMu.Unlock()
+	defer func() {
+		if w.converter != nil {
+			_ = w.converter.Command([]string{"stop"})
+			if retErr != nil {
+				// A canceled/failed load can still have queued START/END
+				// events. Retire that core so none can belong to the next job.
+				w.converter.TerminateDestroy()
+				w.converter = nil
+			}
+		}
+	}()
 
 	if w.aoReloadUnsupported {
 		// A previous job found that "ao-reload" (below) isn't supported by
@@ -578,8 +709,18 @@ func (w *WaveformImageGenerator) convertToWav(ctx context.Context, id, inPath, o
 		}
 	}
 
-	defer w.audioCache.ReleaseReferenceToFile(id)
+	// The caller owns the generation-bound cache reference.
 
+	return w.waitForWaveformConversion(ctx, m, outPath)
+}
+
+type waveformConversionEvents interface {
+	WaitEvent(float32) *mpv.Event
+	GetPropertyString(string) string
+	Command([]string) error
+}
+
+func (w *WaveformImageGenerator) waitForWaveformConversion(ctx context.Context, m waveformConversionEvents, outPath string) error {
 	// Wait for MPV idle or ctx expiry. Only trust idle/idle-active as
 	// meaning "this job is done" once we've actually seen this job's own
 	// EVENT_START_FILE -- immediately after loadfile the shared core can
@@ -587,9 +728,12 @@ func (w *WaveformImageGenerator) convertToWav(ctx context.Context, id, inPath, o
 	// (loadfile only queues the change; mpv starts the new file
 	// asynchronously), which would otherwise look like instant completion
 	// of a job that hasn't even started yet.
-	started := false
+	started, ended := false, false
 	for {
 		select {
+		case <-w.ctx.Done():
+			m.Command([]string{"stop"})
+			return w.ctx.Err()
 		case <-ctx.Done():
 			// Stop this job's playback so the shared core is idle again
 			// and ready for the next queued conversion.
@@ -599,22 +743,22 @@ func (w *WaveformImageGenerator) convertToWav(ctx context.Context, id, inPath, o
 			// use small timeout to allow detecting ctx expiry
 			// without too much delay
 			e := m.WaitEvent(0.05 /*timeout seconds*/)
-			if e.Event_Id == mpv.EVENT_START_FILE {
-				started = true
-			}
-			if started && e.Event_Id == mpv.EVENT_IDLE {
-				if _, err := os.Stat(outPath); os.IsNotExist(err) {
-					log.Printf("WARNING! file %s does not exist after MPV convert", outPath)
+			if e.Event_Id == mpv.EVENT_END_FILE && started {
+				ended = true
+				if err := waveformEndFileError(e); err != nil {
+					return err
 				}
-				return nil
 			}
-			if started {
+			if e.Event_Id == mpv.EVENT_START_FILE {
+				started, ended = true, false
+			}
+			if started && ended && e.Event_Id == mpv.EVENT_IDLE {
+				return validateWaveformOutput(outPath)
+			}
+			if started && ended {
 				ia := m.GetPropertyString("idle-active")
 				if ia == "yes" || ia == "true" {
-					if _, err := os.Stat(outPath); os.IsNotExist(err) {
-						log.Printf("WARNING! file %s does not exist after MPV convert", outPath)
-					}
-					return nil
+					return validateWaveformOutput(outPath)
 				}
 			}
 		}
@@ -625,8 +769,10 @@ func (w *WaveformImageGenerator) convertToWav(ctx context.Context, id, inPath, o
 // was ever created. Must be called during app shutdown to avoid leaking the
 // mpv core; safe to call even if no conversion was ever performed.
 func (w *WaveformImageGenerator) Close() {
-	w.convertMu.Lock()
-	defer w.convertMu.Unlock()
+	w.cancel()
+	w.convertGate <- struct{}{}
+	defer func() { <-w.convertGate }()
+	w.converterClosed = true
 	if w.converter != nil {
 		w.converter.Command([]string{"stop"})
 		w.converter.TerminateDestroy()

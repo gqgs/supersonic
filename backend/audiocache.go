@@ -5,11 +5,9 @@ import (
 	"errors"
 	"log"
 	"os"
-	"path/filepath"
 	"slices"
 	"sync"
 
-	"github.com/20after4/configdir"
 	"github.com/supersonic-app/supersonic/sharedutil"
 )
 
@@ -23,13 +21,40 @@ type AudioCache struct {
 	baseCacheDir string
 
 	entries map[string]*cacheEntry
+	workers sync.WaitGroup
+	closed  bool
 }
 
 type cacheEntry struct {
-	done            bool
+	path            string
+	done            bool // terminal, including failed or canceled downloads
+	err             error
 	refCount        int
+	legacyRefs      int // ID-based references must pin their generation
 	pendingDeletion bool
 	cancel          context.CancelFunc
+}
+
+// cacheFileReference pins one download attempt, not just a track ID. A retry can
+// replace the current entry without changing this reader's path or status.
+type cacheFileReference struct {
+	cache *AudioCache
+	entry *cacheEntry
+	once  sync.Once
+}
+
+func (r *cacheFileReference) status() (bool, error) {
+	r.cache.mutex.Lock()
+	defer r.cache.mutex.Unlock()
+	return r.entry.done, r.entry.err
+}
+
+func (r *cacheFileReference) release() {
+	r.once.Do(func() {
+		r.cache.mutex.Lock()
+		defer r.cache.mutex.Unlock()
+		r.cache.releaseEntry(r.entry)
+	})
 }
 
 // AudioCacheRequest represents a request to prefetch and cache an audio file.
@@ -38,49 +63,37 @@ type AudioCacheRequest struct {
 	DownloadURL string
 }
 
-// NewAudioCache initializes an AudioCache using the given context, server manager,
-// and local filesystem directory for storing audio files.
 func NewAudioCache(ctx context.Context, s *ServerManager, baseCacheDir string) (*AudioCache, error) {
-	if err := configdir.MakePath(baseCacheDir); err != nil {
+	if err := os.MkdirAll(baseCacheDir, 0700); err != nil {
 		return nil, errors.New("failed to create audio cache dir")
 	}
 	return &AudioCache{
-		s:            s,
-		rootCtx:      ctx,
-		baseCacheDir: baseCacheDir,
-		entries:      make(map[string]*cacheEntry),
+		s: s, rootCtx: ctx, baseCacheDir: baseCacheDir,
+		entries: make(map[string]*cacheEntry),
 	}, nil
 }
 
-// PathForCachedFile returns the local filesystem path for a cached track,
-// if the file has finished downloading. If not cached, it returns an empty string.
+// PathForCachedFile returns a path only after a successful complete download.
 func (a *AudioCache) PathForCachedFile(id string) string {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
-
-	if item, ok := a.entries[id]; ok && item.done {
-		return a.pathForID(id)
+	if e := a.entries[id]; e != nil && e.done && e.err == nil && !e.pendingDeletion {
+		return e.path
 	}
 	return ""
 }
 
-// IsFullyDownloaded returns true if the file for the given id is fully downloaded.
 func (a *AudioCache) IsFullyDownloaded(id string) bool {
 	return a.PathForCachedFile(id) != ""
 }
 
-// PathForCachedFile returns the local filesystem path for a cached track,
-// including one that is in the process of downloading.
-// If it is not cached or downloading, it returns an empty string.
 func (a *AudioCache) PathForCachedOrDownloadingFile(id string) string {
 	return a.pathForCachedOrDownloadingFile(id, false)
 }
 
-// ObtainReferenceToFile returns the local filesystem path for a cached track,
-// including one that is in the process of downloading, and obtains a refernce
-// to it such that it will not be deleted until ReleaseReferenceToFile is called.
-
-// If it is not cached or downloading, it returns an empty string.
+// ObtainReferenceToFile pins the current generation until the matching
+// ReleaseReferenceToFile. Internal consumers should use obtainFile instead,
+// whose reference remains unambiguous across same-ID retries.
 func (a *AudioCache) ObtainReferenceToFile(id string) string {
 	return a.pathForCachedOrDownloadingFile(id, true)
 }
@@ -88,113 +101,157 @@ func (a *AudioCache) ObtainReferenceToFile(id string) string {
 func (a *AudioCache) pathForCachedOrDownloadingFile(id string, obtainReference bool) string {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
-
-	if entry, ok := a.entries[id]; ok {
+	if e := a.entries[id]; e != nil && e.err == nil && !e.pendingDeletion {
 		if obtainReference {
-			entry.refCount++
+			e.refCount++
+			e.legacyRefs++
 		}
-		return a.pathForID(id)
+		return e.path
 	}
 	return ""
+}
+
+func (a *AudioCache) obtainFile(id string) (*cacheFileReference, error) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	if a.closed {
+		return nil, context.Canceled
+	}
+	if e := a.entries[id]; e != nil {
+		if e.err != nil {
+			return nil, e.err
+		}
+		if e.pendingDeletion {
+			return nil, context.Canceled
+		}
+		e.refCount++
+		return &cacheFileReference{cache: a, entry: e}, nil
+	}
+	return nil, nil
 }
 
 func (a *AudioCache) ReleaseReferenceToFile(id string) {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
-
-	if e, ok := a.entries[id]; ok {
-		e.refCount--
-		if e.refCount == 0 && e.pendingDeletion {
-			a.deleteEntry(id, e)
+	if e := a.entries[id]; e != nil && e.legacyRefs > 0 {
+		e.legacyRefs--
+		a.releaseEntry(e)
+		if e.pendingDeletion && e.legacyRefs == 0 {
+			delete(a.entries, id)
 		}
 	}
 }
 
-// CacheFile begins downloading a file (if not already downloading) and stores it
-// to the cache directory under its ID as filename. The download is asynchronous.
+// Caller holds mutex. Removal waits for the writer as well as its readers.
+func (a *AudioCache) releaseEntry(e *cacheEntry) {
+	e.refCount--
+	if e.refCount == 0 && e.done && (e.pendingDeletion || e.err != nil) {
+		_ = os.Remove(e.path)
+	}
+}
+
+// CacheFile starts a new attempt if absent or previously failed. Each attempt
+// owns a unique path, so a canceled worker cannot overwrite/delete its retry.
 func (a *AudioCache) CacheFile(id, dlURL string) {
-	s := a.s.Server
-	if s == nil {
+	if a.s == nil || a.s.Server == nil {
 		return
 	}
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
-
 	a.cacheFile(id, dlURL)
 }
 
 func (a *AudioCache) cacheFile(id, dlURL string) {
-	if _, ok := a.entries[id]; !ok {
-		ctx, cancel := context.WithCancel(a.rootCtx)
-		a.entries[id] = &cacheEntry{cancel: cancel}
-		go func() {
-			ok, err := sharedutil.DownloadFileWithContext(ctx, dlURL, a.pathForID(id))
-			if ok {
-				a.mutex.Lock()
-				if e, ok := a.entries[id]; ok {
-					e.done = true
-				}
-				a.mutex.Unlock()
-			} else if err != nil && err != context.DeadlineExceeded {
-				log.Printf("error downloading audio file: %v", err)
-			}
-			cancel() // release ctx resources when done
-		}()
+	if a.closed || a.rootCtx.Err() != nil {
+		return
 	}
+	if old := a.entries[id]; old != nil {
+		if old.legacyRefs > 0 || (!old.pendingDeletion && (!old.done || old.err == nil)) {
+			return
+		}
+		a.deleteEntry(id, old)
+	}
+
+	ctx, cancel := context.WithCancel(a.rootCtx)
+	e := &cacheEntry{cancel: cancel}
+	a.entries[id] = e
+	f, err := os.CreateTemp(a.baseCacheDir, "audio-*")
+	if err != nil {
+		e.done, e.err = true, errors.New("failed to create audio cache file")
+		cancel()
+		return
+	}
+	e.path = f.Name()
+	if err := f.Close(); err != nil {
+		e.done, e.err = true, errors.New("failed to close audio cache file")
+		_ = os.Remove(e.path)
+		cancel()
+		return
+	}
+
+	a.workers.Add(1)
+	go func() {
+		defer a.workers.Done()
+		defer cancel()
+		ok, err := sharedutil.DownloadAudioFileWithContext(ctx, dlURL, e.path)
+		if !ok && err == nil {
+			err = errors.New("audio download did not complete")
+		}
+		if err == nil {
+			err = ctx.Err()
+		}
+		a.mutex.Lock()
+		e.done, e.err = true, err
+		if err != nil || (e.pendingDeletion && e.refCount == 0) {
+			_ = os.Remove(e.path)
+		}
+		a.mutex.Unlock()
+		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("error downloading audio file: %v", err)
+		}
+	}()
 }
 
-// CacheOnly ensures that only the given 'fetch' list of files (plus one extra 'keep' ID) remain cached.
-// Any other cached files are cancelled and deleted from disk.
+// CacheOnly retains requested tracks, cancels unused downloads, and removes
+// their files after readers release them. Failed entries can be retried here.
 func (a *AudioCache) CacheOnly(keep string, fetch []AudioCacheRequest) {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
-
-	// delete files we're not keeping
+	if a.closed {
+		return
+	}
 	for id, e := range a.entries {
-		if id != keep && !slices.ContainsFunc(fetch, func(a AudioCacheRequest) bool {
-			return a.ID == id
-		}) {
-			if e.refCount == 0 {
-				a.deleteEntry(id, e)
-			} else {
-				e.pendingDeletion = true
-			}
+		if id != keep && !slices.ContainsFunc(fetch, func(r AudioCacheRequest) bool { return r.ID == id }) {
+			a.deleteEntry(id, e)
 		}
 	}
-
-	// start caching the ones from fetch if not already present
 	for _, item := range fetch {
-		if _, ok := a.entries[item.ID]; !ok {
-			a.cacheFile(item.ID, item.DownloadURL)
-		}
+		a.cacheFile(item.ID, item.DownloadURL)
 	}
 }
 
-// Shutdown cancels all in-progress downloads and deletes all files in the audio cache directory.
-// This should be called during application shutdown to clean up temporary audio data.
 func (a *AudioCache) Shutdown() {
 	a.mutex.Lock()
-	// Cancel all active downloads
-	for _, entry := range a.entries {
-		if entry.cancel != nil {
-			entry.cancel()
-		}
+	a.closed = true
+	for id, e := range a.entries {
+		a.deleteEntry(id, e)
 	}
-	a.entries = nil // clear cache state
 	a.mutex.Unlock()
-
-	// Remove all files in the cache directory
+	// Writers must finish before deleting the directory, including retired
+	// generations that are no longer in entries.
+	a.workers.Wait()
 	if a.baseCacheDir != "" {
 		_ = os.RemoveAll(a.baseCacheDir)
 	}
 }
 
-func (a *AudioCache) pathForID(id string) string {
-	return filepath.Join(a.baseCacheDir, id)
-}
-
 func (a *AudioCache) deleteEntry(id string, e *cacheEntry) {
+	e.pendingDeletion = true
 	e.cancel()
-	_ = os.Remove(a.pathForID(id))
-	delete(a.entries, id)
+	if e.legacyRefs == 0 && a.entries[id] == e {
+		delete(a.entries, id)
+	}
+	if e.done && e.refCount == 0 {
+		_ = os.Remove(e.path)
+	}
 }
