@@ -14,21 +14,21 @@ func TestReleaseSection(t *testing.T) {
 		want  int
 	}{
 		{0, 0}, {mediaprovider.ReleaseTypeAlbum, 0},
-		{mediaprovider.ReleaseTypeSingle, 1}, {mediaprovider.ReleaseTypeEP, 1},
+		{mediaprovider.ReleaseTypeSingle, 2}, {mediaprovider.ReleaseTypeEP, 1},
 		{mediaprovider.ReleaseTypeSingle | mediaprovider.ReleaseTypeEP, 1},
-		{mediaprovider.ReleaseTypeAlbum | mediaprovider.ReleaseTypeLive, 2},
-		{mediaprovider.ReleaseTypeAlbum | mediaprovider.ReleaseTypeCompilation, 3},
-		{mediaprovider.ReleaseTypeOther, 4},
-		{mediaprovider.ReleaseTypeAlbum | mediaprovider.ReleaseTypeOther, 4},
-		{mediaprovider.ReleaseTypeLive | mediaprovider.ReleaseTypeCompilation | mediaprovider.ReleaseTypeEP, 2},
-		{mediaprovider.ReleaseTypeCompilation | mediaprovider.ReleaseTypeEP, 3},
-		{mediaprovider.ReleaseTypeSingle | mediaprovider.ReleaseTypeRemix, 1},
+		{mediaprovider.ReleaseTypeAlbum | mediaprovider.ReleaseTypeLive, 3},
+		{mediaprovider.ReleaseTypeAlbum | mediaprovider.ReleaseTypeCompilation, 4},
+		{mediaprovider.ReleaseTypeOther, 5},
+		{mediaprovider.ReleaseTypeAlbum | mediaprovider.ReleaseTypeOther, 5},
+		{mediaprovider.ReleaseTypeLive | mediaprovider.ReleaseTypeCompilation | mediaprovider.ReleaseTypeEP, 3},
+		{mediaprovider.ReleaseTypeCompilation | mediaprovider.ReleaseTypeEP, 4},
+		{mediaprovider.ReleaseTypeSingle | mediaprovider.ReleaseTypeRemix, 2},
 	}
 	for _, typ := range []mediaprovider.ReleaseTypes{mediaprovider.ReleaseTypeAudiobook, mediaprovider.ReleaseTypeAudioDrama, mediaprovider.ReleaseTypeBroadcast, mediaprovider.ReleaseTypeDemo, mediaprovider.ReleaseTypeDJMix, mediaprovider.ReleaseTypeFieldRecording, mediaprovider.ReleaseTypeInterview, mediaprovider.ReleaseTypeMixtape, mediaprovider.ReleaseTypeRemix, mediaprovider.ReleaseTypeSoundtrack, mediaprovider.ReleaseTypeSpokenWord} {
 		tests = append(tests, struct {
 			types mediaprovider.ReleaseTypes
 			want  int
-		}{typ | mediaprovider.ReleaseTypeAlbum, 4})
+		}{typ | mediaprovider.ReleaseTypeAlbum, 5})
 	}
 	for _, tt := range tests {
 		if got := releaseSection(tt.types); got != tt.want {
@@ -51,13 +51,10 @@ func TestGroupedReleasesLargeCatalogAndSorting(t *testing.T) {
 		t.Run(sorting, func(t *testing.T) {
 			page.cfg.DiscographySort = sorting
 			model := page.getGroupedReleasesModel()
-			groups := [][]widgets.GridViewItemModel{model.Albums, model.SinglesAndEPs, model.LiveAlbums, model.Compilations, model.Others}
+			groups := [][]widgets.GridViewItemModel{model.Albums, model.EPs, model.Singles, model.LiveAlbums, model.Compilations, model.Others}
 			seen := map[string]bool{}
 			for g, items := range groups {
 				wantLen := 20
-				if g == 1 {
-					wantLen = 40
-				}
 				if len(items) != wantLen {
 					t.Fatalf("section %d: got %d releases, want %d", g, len(items), wantLen)
 				}
@@ -110,13 +107,39 @@ func TestGroupingMissingMetadata(t *testing.T) {
 func TestGroupedReleasesNameFallback(t *testing.T) {
 	page := &ArtistPage{artistPageState: artistPageState{cfg: &backend.ArtistPageConfig{DiscographySort: discographySorts[2]}}, artistInfo: &mediaprovider.ArtistWithAlbums{Albums: []*mediaprovider.Album{
 		{ID: "z", Name: "Zulu", ReleaseTypes: mediaprovider.ReleaseTypeEP},
-		{ID: "a", Name: "Alpha", ReleaseTypes: mediaprovider.ReleaseTypeSingle},
+		{ID: "a", Name: "Alpha", ReleaseTypes: mediaprovider.ReleaseTypeEP},
 		{ID: "s", Name: "The Aardvarks", SortName: "Aardvarks", ReleaseTypes: mediaprovider.ReleaseTypeEP},
 	}}}
-	got := page.getGroupedReleasesModel().SinglesAndEPs
+	got := page.getGroupedReleasesModel().EPs
 	for i, want := range []string{"s", "a", "z"} {
 		if got[i].ID != want {
 			t.Fatalf("item %d: got %s, want %s", i, got[i].ID, want)
 		}
+	}
+}
+
+func TestSeparateEPsAndSinglesUseMetadataWithoutDuplicates(t *testing.T) {
+	page := &ArtistPage{artistPageState: artistPageState{cfg: &backend.ArtistPageConfig{}}, artistInfo: &mediaprovider.ArtistWithAlbums{Albums: []*mediaprovider.Album{
+		{ID: "both", Name: "Ambiguous", ReleaseTypes: mediaprovider.ReleaseTypeEP | mediaprovider.ReleaseTypeSingle},
+		{ID: "ep", Name: "A Single", ReleaseTypes: mediaprovider.ReleaseTypeEP},
+		{ID: "single", Name: "An EP", ReleaseTypes: mediaprovider.ReleaseTypeSingle},
+		{ID: "missing", Name: "Title - EP"},
+		{ID: "other", Name: "Another Single", ReleaseTypes: mediaprovider.ReleaseTypeOther},
+	}}}
+	model := page.getGroupedReleasesModel()
+	if len(model.EPs) != 2 || len(model.Singles) != 1 || model.Singles[0].ID != "single" || len(model.Albums) != 1 || model.Albums[0].ID != "missing" || len(model.Others) != 1 {
+		t.Fatalf("incorrect metadata grouping: %+v", model)
+	}
+	seen := map[string]bool{}
+	for _, group := range [][]widgets.GridViewItemModel{model.Albums, model.EPs, model.Singles, model.LiveAlbums, model.Compilations, model.Others} {
+		for _, item := range group {
+			if seen[item.ID] {
+				t.Fatalf("duplicated %s", item.ID)
+			}
+			seen[item.ID] = true
+		}
+	}
+	if len(seen) != 5 {
+		t.Fatal("lost release")
 	}
 }
