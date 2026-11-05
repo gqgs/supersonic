@@ -2,12 +2,15 @@ package subsonic
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,7 +32,9 @@ func TestStructuredArtworkErrors(t *testing.T) {
 		{"pending", 503, 0, "release-pending", "application/xml", true, true},
 		{"busy", 503, 0, "release-busy", "application/xml", true, true},
 		{"absent release", 404, 0, "release-unavailable", "application/xml", true, false},
-		{"unexpected failure", 503, 0, "release-failed", "application/xml", false, true},
+		{"provider failure", 503, 0, "release-failed", "application/xml", true, true},
+		{"catalog cooldown", 503, 0, "release-deferred", "application/xml", true, true},
+		{"unexpected failure", 503, 0, "unknown", "application/xml", false, true},
 		{"unsupported endpoint", 200, 0, "", "application/xml", false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -102,5 +107,80 @@ func TestArtistArtworkNamespaces(t *testing.T) {
 	}
 	if p.IsArtistCoverArt("am:br:lossless:album:1") {
 		t.Fatal("album incorrectly uses artist limit")
+	}
+}
+
+func TestDeferredAndFailedArtworkKeepInitialAndCachedDeadlines(t *testing.T) {
+	for _, reason := range []string{"release-deferred", "release-failed"} {
+		for _, seconds := range []int{60, 300, 3600} {
+			for _, dateHeader := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%d/date=%v", reason, seconds, dateHeader), func(t *testing.T) {
+					var calls atomic.Int32
+					deadline := time.Now().Add(time.Duration(seconds) * time.Second).Truncate(time.Second)
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						calls.Add(1)
+						w.Header().Set("X-Artwork-Status", "unavailable")
+						w.Header().Set("X-Artwork-Reason", reason)
+						if dateHeader {
+							w.Header().Set("Retry-After", deadline.UTC().Format(http.TimeFormat))
+						} else {
+							w.Header().Set("Retry-After", fmt.Sprint(seconds))
+						}
+						w.WriteHeader(503)
+						fmt.Fprint(w, `<subsonic-response status="failed"><error code="0" message="temporary"/></subsonic-response>`)
+					}))
+					defer server.Close()
+					p := &subsonicMediaProvider{client: &api.Client{Client: server.Client(), BaseUrl: server.URL}}
+					var first time.Time
+					for n := 0; n < 2; n++ {
+						_, err := p.GetCoverArt("artist-release:am:br:lossless:artist:1", 300)
+						var retry *mediaprovider.ArtworkRetryError
+						if !errors.Is(err, mediaprovider.ErrArtworkPending) || !errors.As(err, &retry) {
+							t.Fatalf("missing pending deadline: %v", err)
+						}
+						if retry.RetryAt.Before(deadline) || retry.RetryAt.After(deadline.Add(2*time.Second)) {
+							t.Fatalf("incorrect deadline %v, expected %v", retry.RetryAt, deadline)
+						}
+						if n == 0 {
+							first = retry.RetryAt
+						} else if !first.Equal(retry.RetryAt) {
+							t.Fatal("cache extended deadline")
+						}
+					}
+					if calls.Load() != 1 {
+						t.Fatalf("made %d requests during cooldown", calls.Load())
+					}
+				})
+			}
+		}
+	}
+}
+
+// This fixture is shared with apple-music-bridge's HTTP producer test.
+func TestBridgeRetryProtocolFixture(t *testing.T) {
+	data, err := os.ReadFile("testdata/artwork_retry_protocol.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Reason          string
+		Seconds, Status int
+		Pending         bool
+	}
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range cases {
+		resp := &http.Response{StatusCode: tc.Status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`<subsonic-response status="failed"><error code="0" message="Artwork unavailable"/></subsonic-response>`))}
+		resp.Header.Set("X-Artwork-Status", "unavailable")
+		resp.Header.Set("X-Artwork-Reason", tc.Reason)
+		resp.Header.Set("Retry-After", fmt.Sprint(tc.Seconds))
+		_, retry, err := decodeCoverResponse(resp)
+		if retry != tc.Pending || errors.Is(err, mediaprovider.ErrArtworkPending) != tc.Pending || !mediaprovider.IsExpectedArtworkError(err) {
+			t.Fatalf("%+v: retry=%v err=%v", tc, retry, err)
+		}
+		if coverRetryAfter(resp) != time.Duration(tc.Seconds)*time.Second {
+			t.Fatalf("lost delay for %+v", tc)
+		}
 	}
 }

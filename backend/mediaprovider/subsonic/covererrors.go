@@ -80,7 +80,9 @@ func expectedCoverError(resp *http.Response, apiError *coverAPIError) (bool, err
 	}
 	if resp.StatusCode == http.StatusServiceUnavailable && resp.Header.Get("X-Artwork-Status") == "unavailable" {
 		switch resp.Header.Get("X-Artwork-Reason") {
-		case "release-pending", "release-busy", "lookup-pending", "queue-full":
+		// The bridge uses deferred for catalog cooldowns and failed for
+		// transient provider exceptions. Both retain a retry deadline.
+		case "release-pending", "release-busy", "release-deferred", "release-failed", "lookup-pending", "queue-full":
 			return true, fmt.Errorf("%w: %s", mediaprovider.ErrArtworkPending, resp.Header.Get("X-Artwork-Reason"))
 		case "release-unavailable":
 			return false, mediaprovider.ErrArtworkUnavailable
