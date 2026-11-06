@@ -1,5 +1,11 @@
+.PHONY: build install lint
+
 build:
 	go build -tags migrated_fynedo
+
+# Install the executable to GOBIN (or GOPATH/bin).
+install:
+	go install -tags migrated_fynedo .
 
 # dylibbundler doesn't seem to pick up on the Python framework dependency,
 # so the last 3 cmds move it over manually. This is a bit fragile though
@@ -30,6 +36,5 @@ package_windows:
 package_linux:
 	fyne package -os linux -tags migrated_fynedo
 
-.PHONY: lint
 lint:
 	golangci-lint run
