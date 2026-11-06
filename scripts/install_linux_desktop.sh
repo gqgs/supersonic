@@ -31,7 +31,7 @@ mkdir -p "$data_home/applications"
 desktop_exec="$(printf '%s' "$binary" | sed \
     -e 's/\\/\\\\\\\\/g' \
     -e 's/"/\\\\"/g' \
-    -e 's/\x60/\\\\\x60/g' \
+    -e 's/`/\\\\`/g' \
     -e 's/\$/\\\\$/g' \
     -e 's/%/%%/g')"
 
