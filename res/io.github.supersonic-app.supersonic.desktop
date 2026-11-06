@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Supersonic
+GenericName=Music Player
+Comment=A lightweight cross-platform desktop client for self-hosted music servers
+Keywords=music;audio;player;subsonic;navidrome;streaming;
+Exec=supersonic
+Terminal=false
+Icon=io.github.supersonic-app.supersonic
+StartupWMClass=io.github.supersonic-app.supersonic
+Categories=AudioVideo;Audio;Player;
