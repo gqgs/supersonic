@@ -3,9 +3,10 @@
 build:
 	go build -tags migrated_fynedo
 
-# Install the executable to GOBIN (or GOPATH/bin).
+# Install the executable and, on Linux, its user-local XDG launcher and icons.
 install:
 	go install -tags migrated_fynedo .
+	@if [ "$(uname -s)" = "Linux" ]; then sh scripts/install_linux_desktop.sh; fi
 
 # dylibbundler doesn't seem to pick up on the Python framework dependency,
 # so the last 3 cmds move it over manually. This is a bit fragile though
