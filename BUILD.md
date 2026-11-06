@@ -20,6 +20,17 @@ To build Supersonic from source, first clone the Git repo or download the source
 * clone the repo, CD into the repo root, and run ``make build``
 * (note that the first build will take some time as it will download and build the UI library)
 
+### Install for the current user (Linux)
+
+Run `make install` from the repository root. This installs the binary into
+`GOBIN` (or `GOPATH/bin`) and registers an application launcher and icons
+under `${XDG_DATA_HOME:-~/.local/share}`. No root access or Fyne CLI is needed.
+
+Start Supersonic from the desktop application launcher after installing. If an
+old Supersonic taskbar entry is pinned, unpin it and pin the newly installed
+launcher to ensure KDE Plasma associates the window with the correct icon.
+Close any existing Supersonic windows before checking the updated taskbar icon.
+
 ### Generate installable .tar.xz bundle
 * install the ``fyne`` packaging tool ``go install fyne.io/fyne/v2/cmd/fyne@latest``
 * run ``make package_linux``
