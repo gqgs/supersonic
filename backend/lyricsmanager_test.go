@@ -10,7 +10,7 @@ func TestPreferTimedLyricsKeepsPlainOnMiss(t *testing.T) {
 	plain := &mediaprovider.Lyrics{Lines: []mediaprovider.LyricLine{{Text: "Server text"}}}
 	other := &mediaprovider.Lyrics{Lines: []mediaprovider.LyricLine{{Text: "Other plain text"}}}
 	timed := &mediaprovider.Lyrics{Synced: true, Lines: []mediaprovider.LyricLine{{Text: "Timed", Start: 3}}}
-	for _, tc := range []struct{ primary, fallback, want *mediaprovider.Lyrics }{{plain, nil, plain}, {plain, other, plain}, {plain, timed, timed}, {nil, other, other}, {plain, &mediaprovider.Lyrics{Synced: true}, plain}} {
+	for _, tc := range []struct{ primary, fallback, want *mediaprovider.Lyrics }{{plain, nil, plain}, {plain, other, plain}, {plain, timed, timed}, {nil, other, other}, {&mediaprovider.Lyrics{}, other, other}, {plain, &mediaprovider.Lyrics{Synced: true}, plain}} {
 		if preferTimedLyrics(tc.primary, tc.fallback) != tc.want {
 			t.Fatal("wrong source selection")
 		}

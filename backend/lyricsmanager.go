@@ -98,7 +98,7 @@ func (lm *LyricsManager) fetchLyrics(ctx context.Context, song *mediaprovider.Tr
 
 // Keep server text when the optional lookup misses or only offers another plain copy.
 func preferTimedLyrics(primary, fallback *mediaprovider.Lyrics) *mediaprovider.Lyrics {
-	if fallback != nil && len(fallback.Lines) > 0 && (primary == nil || hasTimedLyrics(fallback)) {
+	if fallback != nil && len(fallback.Lines) > 0 && (primary == nil || len(primary.Lines) == 0 || hasTimedLyrics(fallback)) {
 		return fallback
 	}
 	return primary
