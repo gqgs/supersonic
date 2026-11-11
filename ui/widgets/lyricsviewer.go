@@ -4,20 +4,27 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/lang"
+	"fyne.io/fyne/v2/layout"
+	fynetheme "fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	fynelyrics "github.com/supersonic-app/fyne-lyrics"
 	"github.com/supersonic-app/supersonic/backend/mediaprovider"
 	"github.com/supersonic-app/supersonic/ui/theme"
+	"image/color"
+	"math"
+	"sort"
 )
 
 type LyricsViewer struct {
 	widget.BaseWidget
 
-	noLyricsMsg   fyne.CanvasObject
-	viewer        *fynelyrics.LyricsViewer
-	lyrics        *mediaprovider.Lyrics
-	nextLyricLine int
-	lastPlayPos   float64
+	noLyricsMsg fyne.CanvasObject
+	viewer      *fynelyrics.LyricsViewer
+	lyrics      *mediaprovider.Lyrics
+	currentLine int
+	status      *widget.Label
+	themed      *container.ThemeOverride
+	lastPlayPos float64
 
 	// keeps track if UpdatePlayPos has been called yet
 	// for the current lyrics
@@ -55,7 +62,7 @@ func (l *LyricsViewer) EnableTapToSeek() {
 
 func (l *LyricsViewer) SetLyrics(lyrics *mediaprovider.Lyrics) {
 	l.lyrics = lyrics
-	l.nextLyricLine = 0
+	l.currentLine = 0
 	l.firstUpdate = true
 	if lyrics == nil || len(lyrics.Lines) == 0 {
 		if !l.isEmpty {
@@ -76,59 +83,91 @@ func (l *LyricsViewer) SetLyrics(lyrics *mediaprovider.Lyrics) {
 	for i, line := range lyrics.Lines {
 		lines[i] = line.Text
 	}
-	l.viewer.SetLyrics(lines, lyrics.Synced)
+	// Reject malformed timing rather than showing a false moving highlight.
+	synced := validLyricTiming(lyrics)
+	l.viewer.ActiveLyricColorName = fynetheme.ColorNameForeground
+	if synced {
+		l.viewer.ActiveLyricColorName = fynetheme.ColorNamePrimary
+	}
+	l.viewer.SetLyrics(lines, synced)
+	if l.status == nil {
+		l.status = widget.NewLabel("")
+		l.status.Importance = widget.LowImportance
+	}
+	if synced {
+		l.status.SetText(lang.L("Synced lyrics"))
+	} else {
+		l.status.SetText(lang.L("Unsynced lyrics"))
+	}
+	if l.themed == nil {
+		l.themed = container.NewThemeOverride(l.viewer, lyricTheme{})
+	}
+	l.themed.Refresh()
 	if l.isEmpty {
-		l.container.Objects[0] = l.viewer
+		l.container.Objects[0] = container.New(layout.NewCustomPaddedLayout(12, 12, 16, 16),
+			container.NewBorder(l.status, nil, nil, nil,
+				l.themed))
 		l.isEmpty = false
 		l.Refresh()
 	}
 }
 
-func (l *LyricsViewer) UpdatePlayPos(timeSecs float64) {
-	if l.lyrics == nil || !l.lyrics.Synced {
-		return
+// validLyricTiming never invents timing for plain or malformed lyrics.
+func validLyricTiming(lyrics *mediaprovider.Lyrics) bool {
+	if lyrics == nil || !lyrics.Synced || len(lyrics.Lines) == 0 {
+		return false
 	}
-	if l.firstUpdate || timeSecs < l.lastPlayPos {
-		l.OnSeeked(timeSecs)
-		l.firstUpdate = false
-		return
-	}
-	l.lastPlayPos = timeSecs
-	// advance if needed
-	if l.nextLyricLine >= 0 && l.nextLyricLine < len(l.lyrics.Lines) &&
-		l.lyrics.Lines[l.nextLyricLine].Start <= timeSecs {
-		l.viewer.NextLine()
-		if l.nextLyricLine < len(l.lyrics.Lines)-1 {
-			l.nextLyricLine++
+	previous := -1.0
+	for _, line := range lyrics.Lines {
+		if math.IsNaN(line.Start) || math.IsInf(line.Start, 0) || line.Start < 0 || line.Start < previous {
+			return false
 		}
+		previous = line.Start
 	}
+	return true
 }
 
-func (l *LyricsViewer) OnSeeked(timeSecs float64) {
-	l.lastPlayPos = timeSecs
-	if l.lyrics == nil || !l.lyrics.Synced {
+func lyricLineAt(lines []mediaprovider.LyricLine, seconds float64) int {
+	// One-indexed; zero is the intro. Equal timestamps choose the last such line.
+	return sort.Search(len(lines), func(i int) bool { return lines[i].Start > seconds })
+}
+
+func (l *LyricsViewer) UpdatePlayPos(seconds float64) {
+	if !validLyricTiming(l.lyrics) || math.IsNaN(seconds) || math.IsInf(seconds, 0) {
 		return
 	}
+	current := lyricLineAt(l.lyrics.Lines, seconds)
+	if !l.firstUpdate && seconds >= l.lastPlayPos && current == l.currentLine+1 {
+		l.viewer.NextLine()
+	} else if l.firstUpdate || current != l.currentLine {
+		l.viewer.SetCurrentLine(current)
+	}
+	l.currentLine, l.lastPlayPos, l.firstUpdate = current, seconds, false
+}
 
-	// find first line that starts after timeSecs
-	nextLine := -1
-	for i, l := range l.lyrics.Lines {
-		if l.Start > timeSecs {
-			nextLine = i
-			break
-		}
-	}
+func (l *LyricsViewer) OnSeeked(seconds float64) {
+	l.firstUpdate = true
+	l.UpdatePlayPos(seconds)
+}
 
-	if nextLine == -1 {
-		// last lyric
-		nextLine = len(l.lyrics.Lines)
-		l.nextLyricLine = nextLine - 1
-	} else {
-		l.nextLyricLine = nextLine
+// Only lyrics use regular-weight, larger type; the rest of the app is unchanged.
+type lyricTheme struct{}
+
+func (lyricTheme) Color(n fyne.ThemeColorName, v fyne.ThemeVariant) color.Color {
+	return fyne.CurrentApp().Settings().Theme().Color(n, v)
+}
+func (lyricTheme) Font(s fyne.TextStyle) fyne.Resource {
+	s.Bold = false
+	return fyne.CurrentApp().Settings().Theme().Font(s)
+}
+func (lyricTheme) Icon(n fyne.ThemeIconName) fyne.Resource {
+	return fyne.CurrentApp().Settings().Theme().Icon(n)
+}
+func (lyricTheme) Size(n fyne.ThemeSizeName) float32 {
+	if n == fynetheme.SizeNameSubHeadingText {
+		return fyne.CurrentApp().Settings().Theme().Size(fynetheme.SizeNameText) + 6
 	}
-	if nextLine >= 0 && nextLine <= len(l.lyrics.Lines) {
-		l.viewer.SetCurrentLine(nextLine /*one-indexed*/)
-	}
+	return fyne.CurrentApp().Settings().Theme().Size(n)
 }
 
 func (l *LyricsViewer) CreateRenderer() fyne.WidgetRenderer {
